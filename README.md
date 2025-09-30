@@ -9,29 +9,6 @@ A Model Context Protocol (MCP) server that provides trading capabilities for var
 - **Comprehensive Trading Tools**: Quotes, options chains, account info, order placement, and more
 - **MCP Integration**: Works with Claude Desktop and other MCP clients
 
-## Deployment
-
-This server is **deployed on Railway** and accessible at:
-```
-https://mcp-trading-production.up.railway.app/mcp
-```
-
-### Use the Deployed Server (Easiest)
-
-Add this to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "trading": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp-trading-production.up.railway.app/mcp"],
-      "icon": "📈"
-    }
-  }
-}
-```
-
 ## Local Development
 
 ### Prerequisites

@@ -49,10 +49,6 @@ server_logger.info("MCP Trading Server initialized")
 # Global client instances for different platforms
 clients: Dict[str, Any] = {}
 
-# Session-based credential storage
-# Key: session_id, Value: dict with credentials
-user_sessions: Dict[str, Dict[str, Any]] = {}
-
 # Supported platforms
 SUPPORTED_PLATFORMS = ["tradier"]
 
@@ -60,41 +56,19 @@ class TradingPlatformError(Exception):
     """Custom exception for trading platform errors."""
     pass
 
-def get_current_session_id() -> str:
+def get_user_credentials(platform: str = "tradier", use_sandbox: bool = True) -> tuple[Optional[str], Optional[str]]:
     """
-    Get the current session ID from the MCP context.
-    This is a placeholder - in a real implementation, you'd get this from the MCP session context.
-    For now, we'll use a simple approach that works with the current setup.
-    """
-    # In a real implementation, this would come from the MCP session context
-    # For now, we'll use a simple approach that works
-    import threading
-    return str(threading.get_ident())
-
-def get_user_credentials(session_id: str, platform: str = "tradier", use_sandbox: bool = True) -> tuple[Optional[str], Optional[str]]:
-    """
-    Get user credentials from session storage, falling back to environment variables.
+    Get user credentials from environment variables.
     
     Args:
-        session_id: Current session ID
         platform: Trading platform name
         use_sandbox: Whether to use sandbox environment
     
     Returns:
         Tuple of (access_token, account_number) or (None, None) if not found
     """
-    # First, try to get from session storage
-    if session_id in user_sessions:
-        session_data = user_sessions[session_id]
-        if platform in session_data:
-            platform_data = session_data[platform]
-            sandbox_key = 'sandbox' if use_sandbox else 'production'
-            if sandbox_key in platform_data:
-                creds = platform_data[sandbox_key]
-                return creds.get('access_token'), creds.get('account_number')
+    server_logger.debug(f"Getting credentials for {platform} from environment variables")
     
-    # Fall back to environment variables
-    server_logger.debug(f"No session credentials found for {platform}, falling back to environment variables")
     if platform == "tradier":
         if use_sandbox:
             access_token = os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN")
@@ -106,57 +80,6 @@ def get_user_credentials(session_id: str, platform: str = "tradier", use_sandbox
     
     return None, None
 
-def store_user_credentials(session_id: str, access_token: str, account_number: str, 
-                          platform: str = "tradier", use_sandbox: bool = True) -> None:
-    """
-    Store user credentials in session storage.
-    
-    Args:
-        session_id: Current session ID
-        access_token: Trading platform access token
-        account_number: Trading account number
-        platform: Trading platform name
-        use_sandbox: Whether to use sandbox environment
-    """
-    if session_id not in user_sessions:
-        user_sessions[session_id] = {}
-    
-    if platform not in user_sessions[session_id]:
-        user_sessions[session_id][platform] = {}
-    
-    sandbox_key = 'sandbox' if use_sandbox else 'production'
-    user_sessions[session_id][platform][sandbox_key] = {
-        'access_token': access_token,
-        'account_number': account_number
-    }
-    
-    server_logger.info(f"Stored credentials for session {session_id[:8]}... on {platform} ({sandbox_key})")
-
-def clear_user_credentials(session_id: str, platform: Optional[str] = None) -> None:
-    """
-    Clear user credentials from session storage.
-    
-    Args:
-        session_id: Current session ID
-        platform: Optional platform to clear (if None, clears all platforms)
-    """
-    if session_id not in user_sessions:
-        return
-    
-    if platform is None:
-        # Clear all platforms for this session
-        del user_sessions[session_id]
-        server_logger.info(f"Cleared all credentials for session {session_id[:8]}...")
-    else:
-        # Clear specific platform
-        if platform in user_sessions[session_id]:
-            del user_sessions[session_id][platform]
-            server_logger.info(f"Cleared {platform} credentials for session {session_id[:8]}...")
-        
-        # If no platforms left, remove the session entirely
-        if not user_sessions[session_id]:
-            del user_sessions[session_id]
-
 def get_trading_client(platform: str = "tradier", use_sandbox: bool = True, 
                       access_token: Optional[str] = None, account_number: Optional[str] = None) -> Any:
     """
@@ -165,8 +88,8 @@ def get_trading_client(platform: str = "tradier", use_sandbox: bool = True,
     Args:
         platform: Trading platform name (e.g., 'tradier')
         use_sandbox: Whether to use sandbox environment (default: True)
-        access_token: Optional access token (if not provided, uses session or environment)
-        account_number: Optional account number (if not provided, uses session or environment)
+        access_token: Optional access token (if not provided, uses environment)
+        account_number: Optional account number (not currently used)
     
     Returns:
         Trading client instance
@@ -183,20 +106,17 @@ def get_trading_client(platform: str = "tradier", use_sandbox: bool = True,
         server_logger.error(error_msg)
         raise TradingPlatformError(error_msg)
     
-    # Get credentials from parameters, session, or environment
+    # Get credentials from parameters or environment
     if access_token is None:
-        session_id = get_current_session_id()
-        access_token, _ = get_user_credentials(session_id, platform, use_sandbox)
+        access_token, _ = get_user_credentials(platform, use_sandbox)
     
     if access_token is None:
-        error_msg = f"No access token found for {platform} ({'sandbox' if use_sandbox else 'production'})"
+        error_msg = f"No access token found for {platform} ({'sandbox' if use_sandbox else 'production'}). Please set the appropriate environment variable."
         server_logger.error(error_msg)
         raise TradingPlatformError(error_msg)
     
-    # Create a unique key for this platform, sandbox, and token combination
-    # This allows multiple users with different tokens to have separate clients
-    token_hash = str(hash(access_token))[:8]  # Use first 8 chars of hash for uniqueness
-    client_key = f"{platform}_{'sandbox' if use_sandbox else 'production'}_{token_hash}"
+    # Create a unique key for this platform and sandbox combination
+    client_key = f"{platform}_{'sandbox' if use_sandbox else 'production'}"
     
     # Return existing client if available
     if client_key in clients:
@@ -251,18 +171,12 @@ def _create_tradier_client(use_sandbox: bool = True, access_token: Optional[str]
         raise TradingPlatformError(error_msg)
 
 def _get_account_id(platform: str = "tradier", use_sandbox: bool = True, account_number: Optional[str] = None) -> Optional[str]:
-    """Get the account ID from parameters, session storage, or environment variables."""
+    """Get the account ID from parameters or environment variables."""
     # Use provided account number if available
     if account_number is not None:
         return account_number
     
-    # Try to get from session storage
-    session_id = get_current_session_id()
-    _, session_account = get_user_credentials(session_id, platform, use_sandbox)
-    if session_account is not None:
-        return session_account
-    
-    # Fall back to environment variables
+    # Get from environment variables
     if platform == "tradier":
         if use_sandbox:
             return os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER")
@@ -273,69 +187,9 @@ def _get_account_id(platform: str = "tradier", use_sandbox: bool = True, account
         return None
 
 @mcp.tool()
-def setup_account(access_token: str, account_number: str, platform: str = "tradier", use_sandbox: bool = True) -> str:
-    """
-    Set up trading account credentials for the current session.
-    
-    Args:
-        access_token: Trading platform access token
-        account_number: Trading account number
-        platform: Trading platform to use (default: 'tradier')
-        use_sandbox: Whether to use sandbox environment (default: True)
-    
-    Returns:
-        JSON string containing setup status
-    """
-    server_logger.info(f"Setting up account for platform: {platform}, sandbox: {use_sandbox}")
-    
-    try:
-        session_id = get_current_session_id()
-        
-        # Validate platform
-        if platform not in SUPPORTED_PLATFORMS:
-            return json.dumps({
-                "status": "error",
-                "message": f"Unsupported platform: {platform}. Supported platforms: {SUPPORTED_PLATFORMS}",
-                "platform": platform
-            }, indent=2)
-        
-        # Store credentials
-        store_user_credentials(session_id, access_token, account_number, platform, use_sandbox)
-        
-        # Test the credentials by creating a client
-        try:
-            client = get_trading_client(platform=platform, use_sandbox=use_sandbox)
-            server_logger.info(f"Successfully validated credentials for {platform}")
-            
-            return json.dumps({
-                "status": "success",
-                "message": f"Account setup successful for {platform} ({'sandbox' if use_sandbox else 'production'})",
-                "platform": platform,
-                "use_sandbox": use_sandbox,
-                "account_number": account_number,
-                "session_id": session_id[:8] + "..."
-            }, indent=2)
-            
-        except Exception as e:
-            # Clear the stored credentials if validation failed
-            clear_user_credentials(session_id, platform)
-            return json.dumps({
-                "status": "error",
-                "message": f"Failed to validate credentials for {platform}: {str(e)}",
-                "platform": platform
-            }, indent=2)
-        
-    except Exception as e:
-        return json.dumps({
-            "status": "error",
-            "message": f"Failed to setup account: {str(e)}",
-            "platform": platform
-        }, indent=2)
-
-@mcp.tool()
 def get_account_status() -> str:
     """
-    Get the current account status and active credentials.
+    Get the current account configuration status from environment variables.
     
     Returns:
         JSON string containing account status information
@@ -343,35 +197,16 @@ def get_account_status() -> str:
     server_logger.info("Getting account status")
     
     try:
-        session_id = get_current_session_id()
-        
         status = {
             "status": "success",
-            "message": "Account status retrieved",
-            "session_id": session_id[:8] + "...",
-            "active_accounts": {}
+            "message": "Account status retrieved from environment variables",
+            "environment_variables": {
+                "TRADIER_SANDBOX_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN") else "NOT_SET",
+                "TRADIER_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_ACCESS_TOKEN") else "NOT_SET",
+                "TRADIER_SANDBOX_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER") else "NOT_SET",
+                "TRADIER_PRODUCTION_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_PRODUCTION_ACCOUNT_NUMBER") else "NOT_SET"
+            }
         }
-        
-        # Check session credentials
-        if session_id in user_sessions:
-            for platform, platform_data in user_sessions[session_id].items():
-                status["active_accounts"][platform] = {}
-                for env_type, creds in platform_data.items():
-                    status["active_accounts"][platform][env_type] = {
-                        "account_number": creds.get("account_number", "N/A"),
-                        "has_token": bool(creds.get("access_token"))
-                    }
-        else:
-            status["message"] = "No active accounts in session"
-        
-        # Check environment variables as fallback
-        env_status = {
-            "TRADIER_SANDBOX_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN") else "NOT_SET",
-            "TRADIER_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_ACCESS_TOKEN") else "NOT_SET",
-            "TRADIER_SANDBOX_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER") else "NOT_SET",
-            "TRADIER_PRODUCTION_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_PRODUCTION_ACCOUNT_NUMBER") else "NOT_SET"
-        }
-        status["environment_fallback"] = env_status
         
         return json.dumps(status, indent=2)
         
@@ -379,47 +214,6 @@ def get_account_status() -> str:
         return json.dumps({
             "status": "error",
             "message": f"Failed to get account status: {str(e)}"
-        }, indent=2)
-
-@mcp.tool()
-def clear_account(platform: Optional[str] = None) -> str:
-    """
-    Clear stored account credentials for the current session.
-    
-    Args:
-        platform: Optional platform to clear (if not provided, clears all platforms)
-    
-    Returns:
-        JSON string containing clear status
-    """
-    server_logger.info(f"Clearing account credentials for platform: {platform or 'all'}")
-    
-    try:
-        session_id = get_current_session_id()
-        
-        if platform and platform not in SUPPORTED_PLATFORMS:
-            return json.dumps({
-                "status": "error",
-                "message": f"Unsupported platform: {platform}. Supported platforms: {SUPPORTED_PLATFORMS}",
-                "platform": platform
-            }, indent=2)
-        
-        clear_user_credentials(session_id, platform)
-        
-        message = f"Cleared {'all' if platform is None else platform} account credentials"
-        
-        return json.dumps({
-            "status": "success",
-            "message": message,
-            "platform": platform,
-            "session_id": session_id[:8] + "..."
-        }, indent=2)
-        
-    except Exception as e:
-        return json.dumps({
-            "status": "error",
-            "message": f"Failed to clear account: {str(e)}",
-            "platform": platform
         }, indent=2)
 
 @mcp.tool()
@@ -1046,10 +840,6 @@ def health_check() -> str:
     """
     server_logger.info("Performing health check")
     
-    # Get current session info
-    session_id = get_current_session_id()
-    active_sessions = len(user_sessions)
-    
     health_status = {
         "status": "success",
         "message": "MCP Trading Server is running",
@@ -1057,8 +847,6 @@ def health_check() -> str:
             "name": "trading",
             "supported_platforms": SUPPORTED_PLATFORMS,
             "cached_clients": list(clients.keys()),
-            "active_sessions": active_sessions,
-            "current_session_id": session_id[:8] + "...",
             "environment_variables": {
                 "TRADIER_SANDBOX_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN") else "NOT_SET",
                 "TRADIER_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_ACCESS_TOKEN") else "NOT_SET",
