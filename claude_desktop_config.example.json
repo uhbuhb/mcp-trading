@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "trading": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/mcp-trading",
+        "run",
+        "trading.py"
+      ],
+      "env": {
+        "TRADIER_SANDBOX_ACCESS_TOKEN": "sandbox_access_token",
+        "TRADIER_SANDBOX_ACCOUNT_NUMBER": "sandbox_account_number",
+        "TRADIER_ACCESS_TOKEN":"access_token",
+        "TRADIER_ACCOUNT_NUMBER":"account_number",
+        "TRADIER_SANDBOX_ENDPOINT":"https://sandbox.tradier.com",
+        "TRADIER_ENDPOINT":"https://api.tradier.com"
+      }
+    }
+  }
+}
