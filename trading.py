@@ -1,5 +1,7 @@
 import os
 import json
+import logging
+import sys
 from typing import Any, Dict, List, Optional, Union
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool, TextContent
@@ -9,11 +11,47 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Configure logging
+def setup_logging():
+    """Set up comprehensive logging for the MCP server."""
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/trading_server.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    # Create specific loggers
+    server_logger = logging.getLogger('trading_server')
+    client_logger = logging.getLogger('trading_client')
+    mcp_logger = logging.getLogger('mcp')
+    
+    # Set levels for different components
+    server_logger.setLevel(logging.DEBUG)
+    client_logger.setLevel(logging.DEBUG)
+    mcp_logger.setLevel(logging.INFO)
+    
+    return server_logger, client_logger, mcp_logger
+
+# Initialize logging
+server_logger, client_logger, mcp_logger = setup_logging()
+
 # Initialize FastMCP server
 mcp = FastMCP("trading")
+server_logger.info("MCP Trading Server initialized")
 
 # Global client instances for different platforms
 clients: Dict[str, Any] = {}
+
+# Session-based credential storage
+# Key: session_id, Value: dict with credentials
+user_sessions: Dict[str, Dict[str, Any]] = {}
 
 # Supported platforms
 SUPPORTED_PLATFORMS = ["tradier"]
@@ -22,13 +60,113 @@ class TradingPlatformError(Exception):
     """Custom exception for trading platform errors."""
     pass
 
-def get_trading_client(platform: str = "tradier", use_sandbox: bool = True) -> Any:
+def get_current_session_id() -> str:
+    """
+    Get the current session ID from the MCP context.
+    This is a placeholder - in a real implementation, you'd get this from the MCP session context.
+    For now, we'll use a simple approach that works with the current setup.
+    """
+    # In a real implementation, this would come from the MCP session context
+    # For now, we'll use a simple approach that works
+    import threading
+    return str(threading.get_ident())
+
+def get_user_credentials(session_id: str, platform: str = "tradier", use_sandbox: bool = True) -> tuple[Optional[str], Optional[str]]:
+    """
+    Get user credentials from session storage, falling back to environment variables.
+    
+    Args:
+        session_id: Current session ID
+        platform: Trading platform name
+        use_sandbox: Whether to use sandbox environment
+    
+    Returns:
+        Tuple of (access_token, account_number) or (None, None) if not found
+    """
+    # First, try to get from session storage
+    if session_id in user_sessions:
+        session_data = user_sessions[session_id]
+        if platform in session_data:
+            platform_data = session_data[platform]
+            sandbox_key = 'sandbox' if use_sandbox else 'production'
+            if sandbox_key in platform_data:
+                creds = platform_data[sandbox_key]
+                return creds.get('access_token'), creds.get('account_number')
+    
+    # Fall back to environment variables
+    server_logger.debug(f"No session credentials found for {platform}, falling back to environment variables")
+    if platform == "tradier":
+        if use_sandbox:
+            access_token = os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN")
+            account_number = os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER")
+        else:
+            access_token = os.getenv("TRADIER_ACCESS_TOKEN")
+            account_number = os.getenv("TRADIER_PRODUCTION_ACCOUNT_NUMBER")
+        return access_token, account_number
+    
+    return None, None
+
+def store_user_credentials(session_id: str, access_token: str, account_number: str, 
+                          platform: str = "tradier", use_sandbox: bool = True) -> None:
+    """
+    Store user credentials in session storage.
+    
+    Args:
+        session_id: Current session ID
+        access_token: Trading platform access token
+        account_number: Trading account number
+        platform: Trading platform name
+        use_sandbox: Whether to use sandbox environment
+    """
+    if session_id not in user_sessions:
+        user_sessions[session_id] = {}
+    
+    if platform not in user_sessions[session_id]:
+        user_sessions[session_id][platform] = {}
+    
+    sandbox_key = 'sandbox' if use_sandbox else 'production'
+    user_sessions[session_id][platform][sandbox_key] = {
+        'access_token': access_token,
+        'account_number': account_number
+    }
+    
+    server_logger.info(f"Stored credentials for session {session_id[:8]}... on {platform} ({sandbox_key})")
+
+def clear_user_credentials(session_id: str, platform: Optional[str] = None) -> None:
+    """
+    Clear user credentials from session storage.
+    
+    Args:
+        session_id: Current session ID
+        platform: Optional platform to clear (if None, clears all platforms)
+    """
+    if session_id not in user_sessions:
+        return
+    
+    if platform is None:
+        # Clear all platforms for this session
+        del user_sessions[session_id]
+        server_logger.info(f"Cleared all credentials for session {session_id[:8]}...")
+    else:
+        # Clear specific platform
+        if platform in user_sessions[session_id]:
+            del user_sessions[session_id][platform]
+            server_logger.info(f"Cleared {platform} credentials for session {session_id[:8]}...")
+        
+        # If no platforms left, remove the session entirely
+        if not user_sessions[session_id]:
+            del user_sessions[session_id]
+
+def get_trading_client(platform: str = "tradier", use_sandbox: bool = True, 
+                      access_token: Optional[str] = None, account_number: Optional[str] = None) -> Any:
     """
     Get or create a trading client instance for the specified platform.
     
     Args:
         platform: Trading platform name (e.g., 'tradier')
         use_sandbox: Whether to use sandbox environment (default: True)
+        access_token: Optional access token (if not provided, uses session or environment)
+        account_number: Optional account number (if not provided, uses session or environment)
     
     Returns:
         Trading client instance
@@ -38,42 +176,93 @@ def get_trading_client(platform: str = "tradier", use_sandbox: bool = True) -> A
     """
     global clients
     
-    if platform not in SUPPORTED_PLATFORMS:
-        raise TradingPlatformError(f"Unsupported platform: {platform}. Supported platforms: {SUPPORTED_PLATFORMS}")
+    server_logger.debug(f"Getting trading client for platform: {platform}, sandbox: {use_sandbox}")
     
-    # Create a unique key for this platform and sandbox combination
-    client_key = f"{platform}_{'sandbox' if use_sandbox else 'production'}"
+    if platform not in SUPPORTED_PLATFORMS:
+        error_msg = f"Unsupported platform: {platform}. Supported platforms: {SUPPORTED_PLATFORMS}"
+        server_logger.error(error_msg)
+        raise TradingPlatformError(error_msg)
+    
+    # Get credentials from parameters, session, or environment
+    if access_token is None:
+        session_id = get_current_session_id()
+        access_token, _ = get_user_credentials(session_id, platform, use_sandbox)
+    
+    if access_token is None:
+        error_msg = f"No access token found for {platform} ({'sandbox' if use_sandbox else 'production'})"
+        server_logger.error(error_msg)
+        raise TradingPlatformError(error_msg)
+    
+    # Create a unique key for this platform, sandbox, and token combination
+    # This allows multiple users with different tokens to have separate clients
+    token_hash = str(hash(access_token))[:8]  # Use first 8 chars of hash for uniqueness
+    client_key = f"{platform}_{'sandbox' if use_sandbox else 'production'}_{token_hash}"
     
     # Return existing client if available
     if client_key in clients:
+        server_logger.debug(f"Returning cached client for key: {client_key}")
         return clients[client_key]
+    
+    server_logger.info(f"Creating new client for platform: {platform}, sandbox: {use_sandbox}")
     
     # Create new client based on platform
     if platform == "tradier":
-        client = _create_tradier_client(use_sandbox)
+        client = _create_tradier_client(use_sandbox, access_token)
     else:
-        raise TradingPlatformError(f"Platform {platform} not implemented yet")
+        error_msg = f"Platform {platform} not implemented yet"
+        server_logger.error(error_msg)
+        raise TradingPlatformError(error_msg)
     
     # Cache the client
     clients[client_key] = client
+    server_logger.info(f"Successfully created and cached client for key: {client_key}")
     return client
 
-def _create_tradier_client(use_sandbox: bool = True) -> TradierClient:
+def _create_tradier_client(use_sandbox: bool = True, access_token: Optional[str] = None) -> TradierClient:
     """Create a Tradier client instance."""
-    # Determine which token to use based on sandbox flag
-    if use_sandbox:
-        access_token = os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN")
-        if not access_token:
-            raise TradingPlatformError("TRADIER_SANDBOX_ACCESS_TOKEN environment variable is required for sandbox mode")
-    else:
-        access_token = os.getenv("TRADIER_ACCESS_TOKEN")
-        if not access_token:
-            raise TradingPlatformError("TRADIER_ACCESS_TOKEN environment variable is required for production mode")
+    server_logger.debug(f"Creating Tradier client, sandbox: {use_sandbox}")
     
-    return TradierClient(access_token=access_token, sandbox=use_sandbox)
+    # Use provided token or fall back to environment variables
+    if access_token is None:
+        if use_sandbox:
+            access_token = os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN")
+            if not access_token:
+                error_msg = "TRADIER_SANDBOX_ACCESS_TOKEN environment variable is required for sandbox mode"
+                server_logger.error(error_msg)
+                raise TradingPlatformError(error_msg)
+            server_logger.debug("Using sandbox access token from environment")
+        else:
+            access_token = os.getenv("TRADIER_ACCESS_TOKEN")
+            if not access_token:
+                error_msg = "TRADIER_ACCESS_TOKEN environment variable is required for production mode"
+                server_logger.error(error_msg)
+                raise TradingPlatformError(error_msg)
+            server_logger.debug("Using production access token from environment")
+    else:
+        server_logger.debug(f"Using provided access token for {'sandbox' if use_sandbox else 'production'}")
+    
+    try:
+        client = TradierClient(access_token=access_token, sandbox=use_sandbox)
+        server_logger.info(f"Successfully created Tradier client (sandbox: {use_sandbox})")
+        return client
+    except Exception as e:
+        error_msg = f"Failed to create Tradier client: {str(e)}"
+        server_logger.error(error_msg)
+        raise TradingPlatformError(error_msg)
 
-def _get_account_id(platform: str = "tradier", use_sandbox: bool = True) -> Optional[str]:
-    """Get the account ID from environment variables based on platform and sandbox mode."""
+def _get_account_id(platform: str = "tradier", use_sandbox: bool = True, account_number: Optional[str] = None) -> Optional[str]:
+    """Get the account ID from parameters, session storage, or environment variables."""
+    # Use provided account number if available
+    if account_number is not None:
+        return account_number
+    
+    # Try to get from session storage
+    session_id = get_current_session_id()
+    _, session_account = get_user_credentials(session_id, platform, use_sandbox)
+    if session_account is not None:
+        return session_account
+    
+    # Fall back to environment variables
     if platform == "tradier":
         if use_sandbox:
             return os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER")
@@ -84,24 +273,178 @@ def _get_account_id(platform: str = "tradier", use_sandbox: bool = True) -> Opti
         return None
 
 @mcp.tool()
+def setup_account(access_token: str, account_number: str, platform: str = "tradier", use_sandbox: bool = True) -> str:
+    """
+    Set up trading account credentials for the current session.
+    
+    Args:
+        access_token: Trading platform access token
+        account_number: Trading account number
+        platform: Trading platform to use (default: 'tradier')
+        use_sandbox: Whether to use sandbox environment (default: True)
+    
+    Returns:
+        JSON string containing setup status
+    """
+    server_logger.info(f"Setting up account for platform: {platform}, sandbox: {use_sandbox}")
+    
+    try:
+        session_id = get_current_session_id()
+        
+        # Validate platform
+        if platform not in SUPPORTED_PLATFORMS:
+            return json.dumps({
+                "status": "error",
+                "message": f"Unsupported platform: {platform}. Supported platforms: {SUPPORTED_PLATFORMS}",
+                "platform": platform
+            }, indent=2)
+        
+        # Store credentials
+        store_user_credentials(session_id, access_token, account_number, platform, use_sandbox)
+        
+        # Test the credentials by creating a client
+        try:
+            client = get_trading_client(platform=platform, use_sandbox=use_sandbox)
+            server_logger.info(f"Successfully validated credentials for {platform}")
+            
+            return json.dumps({
+                "status": "success",
+                "message": f"Account setup successful for {platform} ({'sandbox' if use_sandbox else 'production'})",
+                "platform": platform,
+                "use_sandbox": use_sandbox,
+                "account_number": account_number,
+                "session_id": session_id[:8] + "..."
+            }, indent=2)
+            
+        except Exception as e:
+            # Clear the stored credentials if validation failed
+            clear_user_credentials(session_id, platform)
+            return json.dumps({
+                "status": "error",
+                "message": f"Failed to validate credentials for {platform}: {str(e)}",
+                "platform": platform
+            }, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to setup account: {str(e)}",
+            "platform": platform
+        }, indent=2)
+
+@mcp.tool()
+def get_account_status() -> str:
+    """
+    Get the current account status and active credentials.
+    
+    Returns:
+        JSON string containing account status information
+    """
+    server_logger.info("Getting account status")
+    
+    try:
+        session_id = get_current_session_id()
+        
+        status = {
+            "status": "success",
+            "message": "Account status retrieved",
+            "session_id": session_id[:8] + "...",
+            "active_accounts": {}
+        }
+        
+        # Check session credentials
+        if session_id in user_sessions:
+            for platform, platform_data in user_sessions[session_id].items():
+                status["active_accounts"][platform] = {}
+                for env_type, creds in platform_data.items():
+                    status["active_accounts"][platform][env_type] = {
+                        "account_number": creds.get("account_number", "N/A"),
+                        "has_token": bool(creds.get("access_token"))
+                    }
+        else:
+            status["message"] = "No active accounts in session"
+        
+        # Check environment variables as fallback
+        env_status = {
+            "TRADIER_SANDBOX_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN") else "NOT_SET",
+            "TRADIER_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_ACCESS_TOKEN") else "NOT_SET",
+            "TRADIER_SANDBOX_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER") else "NOT_SET",
+            "TRADIER_PRODUCTION_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_PRODUCTION_ACCOUNT_NUMBER") else "NOT_SET"
+        }
+        status["environment_fallback"] = env_status
+        
+        return json.dumps(status, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to get account status: {str(e)}"
+        }, indent=2)
+
+@mcp.tool()
+def clear_account(platform: Optional[str] = None) -> str:
+    """
+    Clear stored account credentials for the current session.
+    
+    Args:
+        platform: Optional platform to clear (if not provided, clears all platforms)
+    
+    Returns:
+        JSON string containing clear status
+    """
+    server_logger.info(f"Clearing account credentials for platform: {platform or 'all'}")
+    
+    try:
+        session_id = get_current_session_id()
+        
+        if platform and platform not in SUPPORTED_PLATFORMS:
+            return json.dumps({
+                "status": "error",
+                "message": f"Unsupported platform: {platform}. Supported platforms: {SUPPORTED_PLATFORMS}",
+                "platform": platform
+            }, indent=2)
+        
+        clear_user_credentials(session_id, platform)
+        
+        message = f"Cleared {'all' if platform is None else platform} account credentials"
+        
+        return json.dumps({
+            "status": "success",
+            "message": message,
+            "platform": platform,
+            "session_id": session_id[:8] + "..."
+        }, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to clear account: {str(e)}",
+            "platform": platform
+        }, indent=2)
+
+@mcp.tool()
 def get_positions(account_id: Optional[str] = None, platform: str = "tradier", use_sandbox: bool = True) -> str:
     """
     Get current trading positions from trading account.
     
     Args:
-        account_id: Optional specific account ID. If not provided, uses account ID from environment variables.
+        account_id: Optional specific account ID. If not provided, uses account ID from session or environment variables.
         platform: Trading platform to use (default: 'tradier')
         use_sandbox: Whether to use sandbox environment (default: True)
     
     Returns:
         JSON string containing position information
     """
+    server_logger.info(f"Getting positions - platform: {platform}, sandbox: {use_sandbox}, account_id: {account_id or 'auto'}")
+    
     try:
-        # Use environment account ID if none provided
+        # Use provided account ID or get from session/environment
         if account_id is None:
             account_id = _get_account_id(platform=platform, use_sandbox=use_sandbox)
+            server_logger.debug(f"Using account ID from session/environment: {account_id}")
         
         client = get_trading_client(platform=platform, use_sandbox=use_sandbox)
+        server_logger.debug(f"Retrieving positions from {platform} for account {account_id}")
         positions = client.get_positions(account_id)
         
         # Format the response
@@ -685,6 +1028,7 @@ def list_platforms() -> str:
     Returns:
         JSON string containing supported platforms
     """
+    server_logger.info("Listing supported platforms")
     return json.dumps({
         "status": "success",
         "message": f"Supported trading platforms: {', '.join(SUPPORTED_PLATFORMS)}",
@@ -692,6 +1036,71 @@ def list_platforms() -> str:
         "default_platform": "tradier"
     }, indent=2)
 
+@mcp.tool()
+def health_check() -> str:
+    """
+    Check the health status of the MCP trading server.
+    
+    Returns:
+        JSON string containing server health information
+    """
+    server_logger.info("Performing health check")
+    
+    # Get current session info
+    session_id = get_current_session_id()
+    active_sessions = len(user_sessions)
+    
+    health_status = {
+        "status": "success",
+        "message": "MCP Trading Server is running",
+        "server_info": {
+            "name": "trading",
+            "supported_platforms": SUPPORTED_PLATFORMS,
+            "cached_clients": list(clients.keys()),
+            "active_sessions": active_sessions,
+            "current_session_id": session_id[:8] + "...",
+            "environment_variables": {
+                "TRADIER_SANDBOX_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN") else "NOT_SET",
+                "TRADIER_ACCESS_TOKEN": "SET" if os.getenv("TRADIER_ACCESS_TOKEN") else "NOT_SET",
+                "TRADIER_SANDBOX_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER") else "NOT_SET",
+                "TRADIER_PRODUCTION_ACCOUNT_NUMBER": "SET" if os.getenv("TRADIER_PRODUCTION_ACCOUNT_NUMBER") else "NOT_SET"
+            }
+        }
+    }
+    
+    # Test client creation if possible (using environment variables)
+    try:
+        test_client = get_trading_client(platform="tradier", use_sandbox=True)
+        health_status["server_info"]["client_test"] = "PASSED"
+        server_logger.info("Health check passed - client creation successful")
+    except Exception as e:
+        health_status["server_info"]["client_test"] = f"FAILED: {str(e)}"
+        health_status["status"] = "warning"
+        health_status["message"] = f"MCP Trading Server is running but client test failed: {str(e)}"
+        server_logger.warning(f"Health check warning - client test failed: {str(e)}")
+    
+    return json.dumps(health_status, indent=2)
+
 if __name__ == "__main__":
-    mcp.run()
+    server_logger.info("Starting MCP Trading Server...")
+    server_logger.info(f"Supported platforms: {SUPPORTED_PLATFORMS}")
+    server_logger.info("Server is ready to accept connections")
+    
+    try:
+        # Run as HTTP server on all interfaces
+        import uvicorn
+        from mcp.server.fastmcp import FastMCP
+        
+        # Create the ASGI app
+        app = mcp.streamable_http_app()
+        
+        # Run with uvicorn
+        server_logger.info("Starting HTTP server on http://0.0.0.0:8000/mcp")
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+        
+    except KeyboardInterrupt:
+        server_logger.info("Server stopped by user")
+    except Exception as e:
+        server_logger.error(f"Server error: {str(e)}")
+        raise
 

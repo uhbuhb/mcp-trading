@@ -301,9 +301,6 @@ class TradierClient:
         
         response = self._make_request(endpoint)
         
-        # Debug: Print the response structure to understand the format
-        if hasattr(self, '_debug') and self._debug:
-            print(f"DEBUG: Balance API response: {response}")
         
         # The response structure might be different - check for various possible keys
         balance_data = None
@@ -312,9 +309,6 @@ class TradierClient:
         elif 'balance' in response and response['balance']:
             balance_data = response['balance']
         else:
-            # If neither key exists, print the response for debugging and try to use the response directly
-            print(f"DEBUG: Full API response: {response}")
-            print(f"DEBUG: Response keys: {list(response.keys())}")
             
             # Try to use the response directly if it contains balance-like data
             if any(key in str(response).lower() for key in ['cash', 'equity', 'buying_power']):
@@ -393,13 +387,6 @@ class TradierClient:
         try:
             response = requests.post(url, headers=self.headers, data=params)
             
-            # Debug: Print request details for troubleshooting
-            if not response.ok:
-                print(f"DEBUG: Request URL: {url}")
-                print(f"DEBUG: Request params: {params}")
-                print(f"DEBUG: Response status: {response.status_code}")
-                print(f"DEBUG: Response text: {response.text}")
-            
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -457,13 +444,6 @@ class TradierClient:
         
         try:
             response = requests.post(url, headers=self.headers, data=params)
-            
-            # Debug: Print request details for troubleshooting
-            if not response.ok:
-                print(f"DEBUG: Request URL: {url}")
-                print(f"DEBUG: Request params: {params}")
-                print(f"DEBUG: Response status: {response.status_code}")
-                print(f"DEBUG: Response text: {response.text}")
             
             response.raise_for_status()
             return response.json()
@@ -580,12 +560,6 @@ class TradierClient:
         try:
             response = requests.delete(url, headers=self.headers)
             
-            # Debug: Print request details for troubleshooting
-            if not response.ok:
-                print(f"DEBUG: Request URL: {url}")
-                print(f"DEBUG: Response status: {response.status_code}")
-                print(f"DEBUG: Response text: {response.text}")
-            
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -637,13 +611,6 @@ class TradierClient:
         
         try:
             response = requests.put(url, headers=self.headers, data=params)
-            
-            # Debug: Print request details for troubleshooting
-            if not response.ok:
-                print(f"DEBUG: Request URL: {url}")
-                print(f"DEBUG: Request params: {params}")
-                print(f"DEBUG: Response status: {response.status_code}")
-                print(f"DEBUG: Response text: {response.text}")
             
             response.raise_for_status()
             return response.json()
