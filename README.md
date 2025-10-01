@@ -77,6 +77,18 @@ Add this to your Claude Desktop configuration:
   }
 }
 ```
+OR for http service:
+```
+{
+  "mcpServers": {
+    "trading-localhost": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:8000/mcp/"],
+      "icon": "📈"
+    }
+  }
+}
+```
 
 
 ## Available Tools
