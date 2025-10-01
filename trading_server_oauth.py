@@ -468,19 +468,217 @@ async def get_account_history(
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
 
 @mcp.tool()
+async def get_account_status(ctx: Context, platform: str = "tradier", use_sandbox: bool = True) -> str:
+    """
+    Get the current account configuration status for the authenticated user.
+
+    Args:
+        ctx: FastMCP Context (automatically injected)
+        platform: Trading platform (default: 'tradier')
+        use_sandbox: Use sandbox environment (default: True)
+
+    Returns:
+        JSON string containing account status information
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    environment = "sandbox" if use_sandbox else "production"
+
+    logger.info(f"get_account_status - user: {user_id}, platform: {platform}, env: {environment}")
+
+    try:
+        # Try to get user's trading credentials
+        try:
+            _, account_number = get_user_trading_credentials(user_id, platform, environment, db)
+            credentials_configured = True
+        except ValueError:
+            credentials_configured = False
+            account_number = None
+
+        return json.dumps({
+            "status": "success",
+            "message": f"Account status retrieved for {platform} {environment}",
+            "user_id": user_id,
+            "platform": platform,
+            "environment": environment,
+            "credentials_configured": credentials_configured,
+            "account_number": account_number if credentials_configured else "NOT_SET"
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Failed to get account status: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def get_account_info(
+    ctx: Context,
+    account_id: Optional[str] = None,
+    platform: str = "tradier",
+    use_sandbox: bool = True
+) -> str:
+    """
+    Get account information from trading platform.
+
+    Args:
+        ctx: FastMCP Context (automatically injected)
+        account_id: Optional account ID override
+        platform: Trading platform (default: 'tradier')
+        use_sandbox: Use sandbox environment (default: True)
+
+    Returns:
+        JSON string containing account information
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    environment = "sandbox" if use_sandbox else "production"
+
+    logger.info(f"get_account_info - user: {user_id}, platform: {platform}")
+
+    try:
+        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        account_to_use = account_id or db_account_number
+
+        account_info = client.get_account_info(account_to_use)
+
+        return json.dumps({
+            "status": "success",
+            "message": f"Account information retrieved successfully from {platform}",
+            "platform": platform,
+            "account_info": account_info
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Failed to get account info: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "platform": platform,
+            "account_info": {}
+        }, indent=2)
+
+@mcp.tool()
+async def change_order(
+    ctx: Context,
+    order_id: str,
+    account_id: Optional[str] = None,
+    platform: str = "tradier",
+    use_sandbox: bool = True,
+    order_type: Optional[str] = None,
+    price: Optional[float] = None,
+    stop: Optional[float] = None,
+    duration: Optional[str] = None,
+    quantity: Optional[float] = None
+) -> str:
+    """
+    Change/modify an existing order.
+
+    Args:
+        ctx: FastMCP Context (automatically injected)
+        order_id: Order ID to change
+        account_id: Optional account ID override
+        platform: Trading platform (default: 'tradier')
+        use_sandbox: Use sandbox environment (default: True)
+        order_type: New order type ('market', 'limit', 'stop', 'stop_limit')
+        price: New limit price (required for limit orders)
+        stop: New stop price (required for stop orders)
+        duration: New order duration ('day', 'gtc', 'pre', 'post')
+        quantity: New quantity
+
+    Returns:
+        JSON string containing change order response
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    environment = "sandbox" if use_sandbox else "production"
+
+    logger.info(f"change_order - user: {user_id}, order_id: {order_id}")
+
+    try:
+        if not order_id:
+            raise TradingPlatformError("Order ID is required to change an order")
+
+        # Validate that at least one parameter is being changed
+        if all(param is None for param in [order_type, price, stop, duration, quantity]):
+            raise TradingPlatformError("At least one order parameter must be provided for modification")
+
+        # Validate order type and price dependencies
+        if order_type in ['limit', 'stop_limit'] and price is None:
+            raise TradingPlatformError(f"Price is required for {order_type} orders")
+
+        if order_type in ['stop', 'stop_limit'] and stop is None:
+            raise TradingPlatformError(f"Stop price is required for {order_type} orders")
+
+        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        account_to_use = account_id or db_account_number
+
+        # Change the order
+        response = client.change_order(
+            account_id=account_to_use,
+            order_id=order_id,
+            order_type=order_type,
+            price=price,
+            stop=stop,
+            duration=duration,
+            quantity=quantity
+        )
+
+        # Build changes summary
+        changes = []
+        if order_type is not None:
+            changes.append(f"type to {order_type}")
+        if price is not None:
+            changes.append(f"price to ${price}")
+        if stop is not None:
+            changes.append(f"stop to ${stop}")
+        if duration is not None:
+            changes.append(f"duration to {duration}")
+        if quantity is not None:
+            changes.append(f"quantity to {quantity}")
+
+        changes_summary = ", ".join(changes)
+
+        return json.dumps({
+            "status": "success",
+            "message": f"Order {order_id} modification {'submitted' if response else 'completed'} on {platform}",
+            "platform": platform,
+            "account_id": account_to_use,
+            "order_id": order_id,
+            "changes": changes_summary,
+            "response": response
+        }, indent=2)
+
+    except TradingPlatformError as e:
+        return json.dumps({
+            "status": "error",
+            "message": f"Trading platform error: {str(e)}",
+            "platform": platform,
+            "order_id": order_id,
+            "response": {}
+        }, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to change order: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to change order {order_id} on {platform}: {str(e)}",
+            "platform": platform,
+            "order_id": order_id,
+            "response": {}
+        }, indent=2)
+
+@mcp.tool()
 async def health_check(ctx: Context) -> str:
     """
     Check server health and authentication status.
-    
+
     Args:
         ctx: FastMCP Context (automatically injected)
-    
+
     Returns:
         JSON string with health and auth status
     """
     try:
         user_id, _ = get_user_context_from_ctx(ctx)
-        
+
         return json.dumps({
             "status": "success",
             "message": "MCP Trading Server is running",
