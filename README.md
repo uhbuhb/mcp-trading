@@ -77,7 +77,7 @@ Add this to your Claude Desktop configuration:
   }
 }
 ```
-OR for http service:
+OR for HTTP service (OAuth-enabled):
 ```
 {
   "mcpServers": {
@@ -89,6 +89,8 @@ OR for http service:
   }
 }
 ```
+
+**⚠️ Important**: The MCP endpoint URL **must include the trailing slash** (`/mcp/`) to match the server's OAuth resource metadata. Without it, OAuth authentication will fail with a resource mismatch error.
 
 
 ## Available Tools

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "trading": {
+    "trading-local": {
       "command": "uv",
       "args": [
         "--directory",
@@ -16,6 +16,12 @@
         "TRADIER_SANDBOX_ENDPOINT":"https://sandbox.tradier.com",
         "TRADIER_ENDPOINT":"https://api.tradier.com"
       }
+    },
+    "trading-remote": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://your-server-url.com/mcp/"],
+      "icon": "📈",
+      "_comment": "⚠️ IMPORTANT: The URL MUST end with /mcp/ (with trailing slash) to match OAuth resource metadata"
     }
   }
 }
