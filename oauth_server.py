@@ -121,7 +121,7 @@ async def setup_form(request: Request):
                     user_email = user.email
             finally:
                 db.close()
-        except:
+        except Exception:
             pass  # Not authenticated, show full form
     
     email_field = f'<input type="email" id="email" name="email" value="{user_email}" required readonly>' if user_email else '<input type="email" id="email" name="email" required>'
@@ -635,8 +635,16 @@ async def _handle_authorization_code_grant(
         raise HTTPException(400, "redirect_uri mismatch")
     
     # REQUIRED: Verify PKCE code_verifier (RFC 7636)
-    expected_challenge = hashlib.sha256(code_verifier.encode()).digest()
-    expected_challenge_b64 = secrets.token_urlsafe(32)  # Simplified - should use proper base64url encoding
+    # Compute the challenge from the verifier using SHA256
+    import base64
+    computed_challenge = hashlib.sha256(code_verifier.encode('ascii')).digest()
+    # Base64url encode (without padding)
+    computed_challenge_b64 = base64.urlsafe_b64encode(computed_challenge).decode('ascii').rstrip('=')
+
+    # Compare with stored challenge
+    if computed_challenge_b64 != oauth_code.code_challenge:
+        logger.warning(f"PKCE verification failed for code {code}")
+        raise HTTPException(400, "Invalid code_verifier")
     
     # Verify resource parameter matches (RFC 8707)
     if resource != oauth_code.resource_parameter:

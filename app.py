@@ -253,45 +253,8 @@ async def root():
 # ============================================================================
 # DEVELOPMENT HELPERS
 # ============================================================================
-
-@app.get("/dev/create-test-client")
-async def create_test_client(db: Session = Depends(get_db)):
-    """
-    Development endpoint to create a test OAuth client.
-    
-    ⚠️ Remove this in production or protect with authentication!
-    """
-    from database import OAuthClient
-    
-    # Check if test client already exists
-    client = db.query(OAuthClient).filter(
-        OAuthClient.client_id == "test-client"
-    ).first()
-    
-    if client:
-        return JSONResponse({
-            "message": "Test client already exists",
-            "client_id": client.client_id,
-            "redirect_uris": client.redirect_uris
-        })
-    
-    # Create test client
-    client = OAuthClient(
-        client_id="test-client",
-        client_name="Test MCP Client",
-        redirect_uris=["http://localhost:3000/callback"],
-        is_confidential=False
-    )
-    
-    db.add(client)
-    db.commit()
-    
-    return JSONResponse({
-        "message": "Test client created",
-        "client_id": "test-client",
-        "redirect_uris": ["http://localhost:3000/callback"],
-        "note": "This is for development only. Use /register for production clients."
-    })
+# Note: Development endpoints have been removed for security.
+# Use the /register endpoint to create OAuth clients in production.
 
 if __name__ == "__main__":
     import uvicorn

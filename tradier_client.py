@@ -396,8 +396,8 @@ class TradierClient:
                 try:
                     response_text = e.response.text
                     error_msg += f" | Response: {response_text}"
-                except:
-                    pass
+                except Exception:
+                    pass  # Response text not available
             raise Exception(error_msg)
 
     def place_multileg_order(self, account_id: str, symbol: str, legs: list, 
@@ -454,8 +454,8 @@ class TradierClient:
                 try:
                     response_text = e.response.text
                     error_msg += f" | Response: {response_text}"
-                except:
-                    pass
+                except Exception:
+                    pass  # Response text not available
             raise Exception(error_msg)
     
     def validate_option_symbol(self, option_symbol: str) -> bool:
@@ -472,8 +472,8 @@ class TradierClient:
             # Try to get a quote for the symbol
             quote = self.get_option_quote(option_symbol)
             return quote.get('symbol') == option_symbol
-        except:
-            return False
+        except Exception:
+            return False  # Symbol doesn't exist or API error
     
     def get_option_quote(self, option_symbol: str) -> Dict[str, Any]:
         """
@@ -569,8 +569,8 @@ class TradierClient:
                 try:
                     response_text = e.response.text
                     error_msg += f" | Response: {response_text}"
-                except:
-                    pass
+                except Exception:
+                    pass  # Response text not available
             raise Exception(error_msg)
 
     def change_order(self, account_id: str, order_id: str, order_type: Optional[str] = None,
@@ -621,8 +621,8 @@ class TradierClient:
                 try:
                     response_text = e.response.text
                     error_msg += f" | Response: {response_text}"
-                except:
-                    pass
+                except Exception:
+                    pass  # Response text not available
             raise Exception(error_msg)
 
     def get_account_history(self, account_id: Optional[str] = None, limit: Optional[int] = None, 

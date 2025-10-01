@@ -685,7 +685,8 @@ async def health_check(ctx: Context) -> str:
             "authenticated": True,
             "user_id": user_id
         }, indent=2)
-    except:
+    except Exception as e:
+        logger.debug(f"Health check without authentication: {e}")
         return json.dumps({
             "status": "success",
             "message": "MCP Trading Server is running",
