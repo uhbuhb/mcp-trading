@@ -25,9 +25,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("trading_server_oauth")
 
-# Initialize FastMCP server
+# Initialize FastMCP server in STATELESS mode for Railway deployment
 # Note: OAuth middleware is added at the FastAPI level in app.py
-mcp = FastMCP("trading")
+# Stateless mode prevents session management issues with multiple connections
+mcp = FastMCP("trading", stateless_http=True)
 
 # Configure to mount at root of its path (so /mcp mount = /mcp endpoint, not /mcp/mcp)
 mcp.settings.streamable_http_path = "/"
