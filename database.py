@@ -64,7 +64,7 @@ class OAuthClient(Base):
 class OAuthCode(Base):
     """Authorization codes for OAuth authorization code flow."""
     __tablename__ = "oauth_codes"
-    
+
     code = Column(String, primary_key=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     client_id = Column(String, ForeignKey("oauth_clients.client_id"), nullable=False)
@@ -72,10 +72,11 @@ class OAuthCode(Base):
     code_challenge = Column(String, nullable=False)  # REQUIRED for PKCE
     code_challenge_method = Column(String, nullable=False, default="S256")  # MUST be S256
     resource_parameter = Column(String, nullable=False)  # REQUIRED per MCP spec (RFC 8707)
+    scope = Column(String, nullable=False, default="trading")  # OAuth 2.0 scope
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     user = relationship("User", back_populates="oauth_codes")
     client = relationship("OAuthClient", back_populates="oauth_codes")
@@ -83,17 +84,18 @@ class OAuthCode(Base):
 class OAuthToken(Base):
     """Access and refresh tokens."""
     __tablename__ = "oauth_tokens"
-    
+
     token_hash = Column(String, primary_key=True)  # SHA256 hash of access token
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     client_id = Column(String, ForeignKey("oauth_clients.client_id"), nullable=False)
     resource_parameter = Column(String, nullable=False)  # Token audience (RFC 8707)
+    scope = Column(String, nullable=False, default="trading")  # OAuth 2.0 scope
     expires_at = Column(DateTime, nullable=False)
     refresh_token_hash = Column(String, unique=True, nullable=True)
     refresh_expires_at = Column(DateTime, nullable=True)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     user = relationship("User", back_populates="oauth_tokens")
     client = relationship("OAuthClient", back_populates="oauth_tokens")

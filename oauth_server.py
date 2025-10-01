@@ -21,6 +21,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 import bcrypt
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from database import (
     get_db, User, UserCredential, OAuthClient, OAuthCode, OAuthToken
@@ -28,6 +30,9 @@ from database import (
 from encryption import get_encryption_service
 
 logger = logging.getLogger("oauth_server")
+
+# Rate limiter configuration
+limiter = Limiter(key_func=get_remote_address)
 
 # Password hashing functions using bcrypt directly (Python 3.13 compatible)
 def hash_password(password: str) -> str:
@@ -47,7 +52,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # JWT configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 15  # Reduced from 60 to 15 for better security (OAuth 2.1 best practice)
 REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 # Server configuration
@@ -71,11 +76,13 @@ async def authorization_server_metadata():
         "issuer": SERVER_URL,
         "authorization_endpoint": f"{SERVER_URL}/authorize",
         "token_endpoint": f"{SERVER_URL}/token",
+        "revocation_endpoint": f"{SERVER_URL}/revoke",  # RFC 7009
         "registration_endpoint": f"{SERVER_URL}/register",  # Optional but recommended
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],  # REQUIRED: PKCE support
         "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+        "revocation_endpoint_auth_methods_supported": ["none"],  # RFC 7009
         "scopes_supported": ["trading"],
         "service_documentation": f"{SERVER_URL}/docs"
     })
@@ -344,7 +351,9 @@ async def setup_credentials(
 # ============================================================================
 
 @router.get("/authorize")
+@limiter.limit("20/minute")  # Prevent authorization endpoint abuse
 async def authorize(
+    request: Request,
     response_type: str,
     client_id: str,
     redirect_uri: str,
@@ -381,7 +390,20 @@ async def authorize(
     # Validate resource parameter (RFC 8707 - required by MCP spec)
     if not resource:
         raise HTTPException(400, "resource parameter is required per MCP spec (RFC 8707)")
-    
+
+    # Validate and normalize scope
+    requested_scope = scope or "trading"  # Default to "trading" if not provided
+    requested_scopes = set(requested_scope.split())
+    allowed_scopes = {"trading"}  # Currently only "trading" scope supported
+
+    # Check if requested scopes are valid
+    if not requested_scopes.issubset(allowed_scopes):
+        invalid_scopes = requested_scopes - allowed_scopes
+        raise HTTPException(400, f"Invalid scope(s): {', '.join(invalid_scopes)}. Supported scopes: {', '.join(allowed_scopes)}")
+
+    # Normalize scope (space-separated string)
+    normalized_scope = " ".join(sorted(requested_scopes))
+
     # Validate client
     client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
     if not client:
@@ -477,6 +499,7 @@ async def authorize(
             <input type="hidden" name="code_challenge" value="{code_challenge}">
             <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
             <input type="hidden" name="resource" value="{resource}">
+            <input type="hidden" name="scope" value="{normalized_scope}">
             
             <div class="form-group">
                 <label for="email">Email:</label>
@@ -496,7 +519,9 @@ async def authorize(
     """)
 
 @router.post("/authorize/login")
+@limiter.limit("10/minute")  # Stricter limit for login attempts (brute force protection)
 async def authorize_login(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
     client_id: str = Form(...),
@@ -505,6 +530,7 @@ async def authorize_login(
     code_challenge: str = Form(...),
     code_challenge_method: str = Form(...),
     resource: str = Form(...),
+    scope: str = Form(default="trading"),
     db: Session = Depends(get_db)
 ):
     """
@@ -554,6 +580,7 @@ async def authorize_login(
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
         resource_parameter=resource,  # Store resource for token validation
+        scope=scope,  # Store approved scope
         expires_at=datetime.utcnow() + timedelta(minutes=10)  # Short-lived
     )
     db.add(oauth_code)
@@ -569,7 +596,9 @@ async def authorize_login(
     return RedirectResponse(redirect_url, status_code=303)
 
 @router.post("/token")
+@limiter.limit("30/minute")  # Limit token requests
 async def token_exchange(
+    request: Request,
     grant_type: str = Form(...),
     code: Optional[str] = Form(None),
     redirect_uri: Optional[str] = Form(None),
@@ -657,28 +686,30 @@ async def _handle_authorization_code_grant(
     
     logger.info(f"Authorization code validated for user {oauth_code.user_id}")
     
-    # Generate access token (JWT with audience claim)
+    # Generate access token (JWT with audience claim and scope)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "sub": str(oauth_code.user_id),
             "aud": resource,  # REQUIRED: Token audience must match resource parameter
-            "client_id": client_id
+            "client_id": client_id,
+            "scope": oauth_code.scope  # Include approved scope in token
         },
         expires_delta=access_token_expires
     )
-    
+
     # Generate refresh token
     refresh_token_value = secrets.token_urlsafe(32)
     refresh_token_hash = hashlib.sha256(refresh_token_value.encode()).hexdigest()
-    
-    # Store token
+
+    # Store token with scope
     token_hash = hashlib.sha256(access_token.encode()).hexdigest()
     oauth_token = OAuthToken(
         token_hash=token_hash,
         user_id=oauth_code.user_id,
         client_id=client_id,
         resource_parameter=resource,
+        scope=oauth_code.scope,  # Store approved scope
         expires_at=datetime.utcnow() + access_token_expires,
         refresh_token_hash=refresh_token_hash,
         refresh_expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
@@ -693,7 +724,7 @@ async def _handle_authorization_code_grant(
         "token_type": "Bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "refresh_token": refresh_token_value,
-        "scope": "trading"
+        "scope": oauth_code.scope  # Return the approved scope
     })
 
 async def _handle_refresh_token_grant(
@@ -726,37 +757,114 @@ async def _handle_refresh_token_grant(
     if resource != oauth_token.resource_parameter:
         raise HTTPException(400, "resource parameter mismatch")
     
-    # Generate new access token
+    # Generate new access token with scope
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "sub": str(oauth_token.user_id),
             "aud": resource,
-            "client_id": client_id
+            "client_id": client_id,
+            "scope": oauth_token.scope  # Include scope from stored token
         },
         expires_delta=access_token_expires
     )
-    
+
     # Rotate refresh token (best practice for public clients per OAuth 2.1)
     new_refresh_token = secrets.token_urlsafe(32)
     new_refresh_hash = hashlib.sha256(new_refresh_token.encode()).hexdigest()
-    
+
     # Update token
     oauth_token.token_hash = hashlib.sha256(access_token.encode()).hexdigest()
     oauth_token.refresh_token_hash = new_refresh_hash
     oauth_token.expires_at = datetime.utcnow() + access_token_expires
     oauth_token.refresh_expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     db.commit()
-    
+
     logger.info(f"Refreshed token for user {oauth_token.user_id}")
-    
+
     return JSONResponse({
         "access_token": access_token,
         "token_type": "Bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "refresh_token": new_refresh_token,
-        "scope": "trading"
+        "scope": oauth_token.scope  # Return the scope from stored token
     })
+
+# ============================================================================
+# TOKEN REVOCATION (RFC 7009)
+# ============================================================================
+
+@router.post("/revoke")
+async def revoke_token(
+    token: str = Form(...),
+    token_type_hint: Optional[str] = Form(None),
+    client_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Token Revocation Endpoint (RFC 7009).
+
+    Allows clients to revoke access tokens or refresh tokens.
+
+    Args:
+        token: The token to revoke (access_token or refresh_token)
+        token_type_hint: Optional hint about token type ("access_token" or "refresh_token")
+        client_id: Optional client_id for validation
+
+    Returns:
+        200 OK (even if token doesn't exist per RFC 7009)
+
+    Security:
+    - Per RFC 7009, always returns 200 to prevent token scanning
+    - Validates client_id if provided
+    - Supports both access tokens and refresh tokens
+    """
+    logger.info(f"Token revocation request (hint: {token_type_hint})")
+
+    # Hash the token to search database
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    # Try to find as access token first (or if hint says access_token)
+    if token_type_hint != "refresh_token":
+        oauth_token = db.query(OAuthToken).filter(
+            OAuthToken.token_hash == token_hash
+        ).first()
+
+        if oauth_token:
+            # Validate client_id if provided
+            if client_id and oauth_token.client_id != client_id:
+                logger.warning(f"Client ID mismatch on revocation: {client_id}")
+                # Per RFC 7009, still return 200 but don't revoke
+                return JSONResponse({"success": True})
+
+            # Mark as revoked
+            oauth_token.revoked = True
+            db.commit()
+            logger.info(f"Access token revoked for user {oauth_token.user_id}")
+            return JSONResponse({"success": True})
+
+    # Try as refresh token (or if hint says refresh_token)
+    if token_type_hint != "access_token":
+        refresh_hash = hashlib.sha256(token.encode()).hexdigest()
+        oauth_token = db.query(OAuthToken).filter(
+            OAuthToken.refresh_token_hash == refresh_hash
+        ).first()
+
+        if oauth_token:
+            # Validate client_id if provided
+            if client_id and oauth_token.client_id != client_id:
+                logger.warning(f"Client ID mismatch on revocation: {client_id}")
+                return JSONResponse({"success": True})
+
+            # Mark as revoked (revokes both access and refresh)
+            oauth_token.revoked = True
+            db.commit()
+            logger.info(f"Refresh token revoked for user {oauth_token.user_id}")
+            return JSONResponse({"success": True})
+
+    # Token not found - still return 200 per RFC 7009
+    logger.debug("Token not found for revocation (returning 200 per RFC 7009)")
+    return JSONResponse({"success": True})
 
 # ============================================================================
 # CLIENT REGISTRATION (Optional but recommended)

@@ -146,7 +146,14 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 Starting MCP Trading Server with OAuth 2.1")
     logger.info(f"Server URL: {SERVER_URL}")
-    
+
+    # Validate JWT_SECRET_KEY is set (critical for production)
+    if not os.getenv("JWT_SECRET_KEY"):
+        logger.error("❌ JWT_SECRET_KEY environment variable is not set!")
+        logger.error("⚠️  This is CRITICAL for production - tokens will be invalid after restart")
+        logger.error("📝 Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+        raise ValueError("JWT_SECRET_KEY environment variable is required for production")
+
     # Initialize database
     try:
         init_database()
@@ -154,7 +161,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Database initialization failed: {e}")
         raise
-    
+
     # Initialize encryption service
     try:
         from encryption import get_encryption_service
@@ -164,14 +171,25 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Encryption service initialization failed: {e}")
         logger.warning("⚠️  Make sure ENCRYPTION_KEY is set in environment!")
         raise
-    
+
+    # Start cleanup job for expired tokens/codes
+    import asyncio
+    from cleanup_job import cleanup_loop
+    cleanup_stop_event = asyncio.Event()
+    cleanup_task = asyncio.create_task(cleanup_loop(cleanup_stop_event))
+    logger.info("✅ OAuth cleanup job started")
+
     # Start FastMCP session manager (required for streamable HTTP)
     async with trading_mcp.session_manager.run():
         logger.info("✅ FastMCP session manager started")
+        logger.info("✅ All startup checks passed - server ready")
         yield
-    
+
     # Shutdown
     logger.info("🛑 Shutting down MCP Trading Server")
+    cleanup_stop_event.set()
+    await cleanup_task
+    logger.info("✅ Cleanup job stopped")
 
 # Create FastAPI app
 app = FastAPI(
@@ -189,6 +207,16 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id"],  # Required for MCP session management
 )
+
+# Add rate limiting middleware (must be before routes)
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from oauth_server import limiter
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Add OAuth token validation for MCP endpoints
 app.add_middleware(MCPAuthMiddleware)
