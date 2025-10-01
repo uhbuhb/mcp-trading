@@ -91,6 +91,23 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                 db_gen = get_db()
                 db = next(db_gen)
                 
+                # SECURITY: Verify user still exists in database
+                from database import User
+                user = db.query(User).filter(User.user_id == user_id).first()
+                if not user:
+                    logger.warning(f"❌ Token references non-existent user: {user_id}")
+                    db.close()
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "error": "invalid_token", 
+                            "message": "User account no longer exists. Please authenticate again."
+                        },
+                        headers={
+                            "WWW-Authenticate": f'Bearer realm="MCP Trading", error="invalid_token"'
+                        }
+                    )
+                
                 # Store in context-local storage for tools to access
                 set_request_context(user_id, db)
                 

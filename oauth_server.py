@@ -101,22 +101,51 @@ async def protected_resource_metadata():
 # ============================================================================
 
 @router.get("/setup", response_class=HTMLResponse)
-async def setup_form():
+async def setup_form(request: Request):
     """Credential submission form for users to register their Tradier credentials."""
-    return HTMLResponse("""
+    # Check if user is authenticated via OAuth
+    auth_header = request.headers.get("Authorization")
+    user_email = None
+    
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
+            user_id = payload["sub"]
+            # Get user email from database
+            from database import get_db
+            db = next(get_db())
+            try:
+                user = db.query(User).filter(User.user_id == user_id).first()
+                if user:
+                    user_email = user.email
+            finally:
+                db.close()
+        except:
+            pass  # Not authenticated, show full form
+    
+    email_field = f'<input type="email" id="email" name="email" value="{user_email}" required readonly>' if user_email else '<input type="email" id="email" name="email" required>'
+    password_section = '' if user_email else '''
+            <div class="form-group">
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password" required minlength="8">
+            </div>
+    '''
+    
+    return HTMLResponse(f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title>MCP Trading - Setup Credentials</title>
         <style>
-            body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
-            h1 { color: #333; }
-            .form-group { margin: 20px 0; }
-            label { display: block; margin-bottom: 5px; font-weight: bold; }
-            input, select { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
-            button { background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }
-            button:hover { background: #0056b3; }
-            .warning { background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 4px; margin: 20px 0; }
+            body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+            h1 {{ color: #333; }}
+            .form-group {{ margin: 20px 0; }}
+            label {{ display: block; margin-bottom: 5px; font-weight: bold; }}
+            input, select {{ width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }}
+            button {{ background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }}
+            button:hover {{ background: #0056b3; }}
+            .warning {{ background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 4px; margin: 20px 0; }}
         </style>
     </head>
     <body>
@@ -130,13 +159,10 @@ async def setup_form():
         <form method="post" action="/setup">
             <div class="form-group">
                 <label for="email">Email:</label>
-                <input type="email" id="email" name="email" required>
+                {email_field}
             </div>
             
-            <div class="form-group">
-                <label for="password">Password:</label>
-                <input type="password" id="password" name="password" required minlength="8">
-            </div>
+            {password_section}
             
             <h2>Trading Platform Credentials</h2>
             
@@ -175,8 +201,9 @@ async def setup_form():
 
 @router.post("/setup")
 async def setup_credentials(
+    request: Request,
     email: str = Form(...),
-    password: str = Form(...),
+    password: Optional[str] = Form(None),
     platform: str = Form(...),
     environment: str = Form(...),
     access_token: str = Form(...),
@@ -185,6 +212,10 @@ async def setup_credentials(
 ):
     """
     Register user and encrypt their trading credentials.
+    
+    Two modes:
+    1. Authenticated (has OAuth token): Adds credentials to authenticated user
+    2. Unauthenticated: Creates new user with email/password
     
     Security:
     - Passwords are hashed with bcrypt
@@ -200,22 +231,48 @@ async def setup_credentials(
     if environment not in ["sandbox", "production"]:
         raise HTTPException(400, "Invalid environment")
     
-    # Check if user exists
-    user = db.query(User).filter(User.email == email).first()
+    # Check if user is authenticated via OAuth
+    auth_header = request.headers.get("Authorization")
+    user = None
     
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
+            user_id = payload["sub"]
+            # Get user from database
+            user = db.query(User).filter(User.user_id == user_id).first()
+            if user:
+                logger.info(f"Using authenticated user: {user.user_id} ({user.email})")
+                # Update email if it was set during OAuth without email
+                if not user.email or user.email != email:
+                    user.email = email
+                    db.commit()
+        except Exception as e:
+            logger.warning(f"OAuth token validation failed during setup: {e}")
+            # Fall through to email/password flow
+    
+    # If not authenticated via OAuth, use email/password
     if user is None:
-        # Create new user
-        password_hash = hash_password(password)
-        user = User(email=email, password_hash=password_hash)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        logger.info(f"Created new user: {user.user_id}")
-    else:
-        # Verify password for existing user
-        if not verify_password(password, user.password_hash):
-            raise HTTPException(401, "Invalid credentials")
-        logger.info(f"User already exists: {user.user_id}")
+        if not password:
+            raise HTTPException(400, "Password required when not authenticated via OAuth")
+        
+        # Check if user exists
+        user = db.query(User).filter(User.email == email).first()
+        
+        if user is None:
+            # Create new user
+            password_hash = hash_password(password)
+            user = User(email=email, password_hash=password_hash)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            logger.info(f"Created new user: {user.user_id}")
+        else:
+            # Verify password for existing user
+            if not verify_password(password, user.password_hash):
+                raise HTTPException(401, "Invalid credentials")
+            logger.info(f"User already exists: {user.user_id}")
     
     # Encrypt credentials
     encryption_service = get_encryption_service()
@@ -328,7 +385,52 @@ async def authorize(
     # Validate client
     client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
     if not client:
-        raise HTTPException(400, f"Unknown client_id: {client_id}")
+        logger.error(f"Unknown client_id: {client_id}")
+        logger.error(f"This usually happens when the database was cleared but the client cached the registration.")
+        logger.error(f"Available clients in DB: {[c.client_id for c in db.query(OAuthClient).all()]}")
+        
+        # Return HTML error page with helpful instructions
+        return HTMLResponse(
+            content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Client Not Found</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                    .error {{ background: #f8d7da; border: 1px solid #f5c6cb; padding: 20px; border-radius: 4px; }}
+                    .solution {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                    code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
+                    ol {{ margin: 10px 0; padding-left: 20px; }}
+                </style>
+            </head>
+            <body>
+                <div class="error">
+                    <h2>❌ Unknown Client</h2>
+                    <p>Client ID: <code>{client_id}</code></p>
+                    <p>This client is not registered with the server.</p>
+                </div>
+                
+                <div class="solution">
+                    <h3>🔧 How to Fix This:</h3>
+                    <p>This usually happens when the server database was reset but your MCP client cached the old registration.</p>
+                    
+                    <ol>
+                        <li>Close Claude Desktop completely</li>
+                        <li>Clear the MCP server from your config (or just restart Claude)</li>
+                        <li>Re-add the MCP server to your config</li>
+                        <li>Restart Claude Desktop</li>
+                        <li>The client will automatically re-register and get a new client_id</li>
+                    </ol>
+                    
+                    <p><strong>Note:</strong> The server will remember your client registration in the future, 
+                    so you won't need to do this again unless the database is cleared.</p>
+                </div>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
     
     # Validate redirect_uri
     if redirect_uri not in client.redirect_uris:
@@ -363,6 +465,11 @@ async def authorize(
             <p><strong>Resource:</strong> {resource}</p>
         </div>
         
+        <div class="warning" style="background: #d1ecf1; border: 1px solid #bee5eb; padding: 10px; border-radius: 4px; margin: 20px 0;">
+            <strong>ℹ️ First time?</strong> Enter your email and create a password. This will create your account.
+            <br><strong>Returning?</strong> Enter your existing email and password to log in.
+        </div>
+        
         <form method="post" action="/authorize/login">
             <input type="hidden" name="client_id" value="{client_id}">
             <input type="hidden" name="redirect_uri" value="{redirect_uri}">
@@ -373,12 +480,12 @@ async def authorize(
             
             <div class="form-group">
                 <label for="email">Email:</label>
-                <input type="email" id="email" name="email" required>
+                <input type="email" id="email" name="email" required placeholder="your.email@example.com">
             </div>
             
             <div class="form-group">
-                <label for="password">Password:</label>
-                <input type="password" id="password" name="password" required>
+                <label for="password">Password (min 8 characters):</label>
+                <input type="password" id="password" name="password" required minlength="8" placeholder="Create or enter your password">
             </div>
             
             <button type="submit">Authorize</button>
@@ -403,19 +510,32 @@ async def authorize_login(
     """
     Process login and generate authorization code.
     
+    Creates user if they don't exist, or authenticates existing user.
+    
     Security:
-    - Verifies user credentials
+    - Verifies user credentials for existing users
+    - Creates new users with hashed passwords
     - Generates cryptographically secure authorization code
     - Stores code with PKCE challenge for later verification
     """
     logger.info(f"Login attempt for {email}")
     
-    # Authenticate user
+    # Check if user exists
     user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.password_hash):
-        raise HTTPException(401, "Invalid email or password")
     
-    logger.info(f"User authenticated: {user.user_id}")
+    if user is None:
+        # Create new user during OAuth flow
+        password_hash = hash_password(password)
+        user = User(email=email, password_hash=password_hash)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        logger.info(f"Created new user during OAuth: {user.user_id}")
+    else:
+        # Authenticate existing user
+        if not verify_password(password, user.password_hash):
+            raise HTTPException(401, "Invalid password")
+        logger.info(f"User authenticated: {user.user_id}")
     
     # Validate client again
     client = db.query(OAuthClient).filter(OAuthClient.client_id == client_id).first()
@@ -798,6 +918,21 @@ async def get_current_user_id(
         raise HTTPException(401, "Token expired")
     
     user_id = payload["sub"]
+    
+    # SECURITY: Verify user still exists in database
+    # If user was deleted, token should be invalid
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        logger.warning(f"Token references non-existent user: {user_id}")
+        # Revoke the token since user no longer exists
+        oauth_token.revoked = True
+        db.commit()
+        raise HTTPException(
+            401, 
+            "User account no longer exists. Please authenticate again.",
+            headers={"WWW-Authenticate": f'Bearer realm="MCP Trading", error="invalid_token"'}
+        )
+    
     logger.debug(f"Authenticated user: {user_id}")
     
     return user_id
