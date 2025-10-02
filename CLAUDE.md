@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-An OAuth 2.1 secured MCP (Model Context Protocol) server that provides trading capabilities for brokerages. Currently supports Tradier with extensible architecture for additional platforms. The server implements OAuth 2.1 with PKCE, resource indicators (RFC 8707), and dynamic client registration.
+An OAuth 2.1 secured MCP (Model Context Protocol) server that provides trading capabilities for brokerages. Currently supports Tradier and Schwab with extensible architecture for additional platforms. The server implements OAuth 2.1 with PKCE, resource indicators (RFC 8707), and dynamic client registration.
 
 ## Architecture
 
@@ -39,10 +39,16 @@ An OAuth 2.1 secured MCP (Model Context Protocol) server that provides trading c
 - Middleware sets `(user_id, db_session)` before tool execution
 - Tools access via `get_request_context()`
 
-**Platform Clients (`tradier_client.py`)**
-- `TradierClient`: Handles Tradier API interactions
-- Supports sandbox and production environments
-- Base URL: sandbox=`https://sandbox.tradier.com`, prod=`https://api.tradier.com`
+**Platform Clients**
+- `TradierClient` (`tradier_client.py`): Handles Tradier API interactions
+  - Supports sandbox and production environments
+  - Base URL: sandbox=`https://sandbox.tradier.com`, prod=`https://api.tradier.com`
+  - Uses simple API token authentication
+- `SchwabClient` (`schwab_client.py`): Handles Schwab API interactions
+  - Uses OAuth 2.0 with access/refresh tokens
+  - Requires `SCHWAB_APP_KEY` and `SCHWAB_APP_SECRET` environment variables
+  - Automatically handles token refresh via `schwab-py` library
+  - Stores account hash instead of account number
 
 **Encryption (`encryption.py`)**
 - Fernet symmetric encryption for trading credentials
@@ -73,17 +79,32 @@ JWT_SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_ur
 ENCRYPTION_KEY=<generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
 SERVER_URL=http://localhost:8000
 DATABASE_URL=sqlite:///./trading_oauth.db  # Or PostgreSQL URL
+
+# For Schwab support:
+SCHWAB_APP_KEY=<your_schwab_app_key>
+SCHWAB_APP_SECRET=<your_schwab_app_secret>
+SCHWAB_CALLBACK_URL=http://localhost:8000/setup/schwab/callback  # Optional, defaults to {SERVER_URL}/setup/schwab/callback
 ```
 
 **Database initialization:**
 Database is auto-initialized on server startup via `init_database()` in `database.py`.
 
 **Register user credentials:**
-Navigate to `/setup` endpoint (browser form) or POST to `/setup` with:
+
+*Tradier (Token-based):*
+Navigate to `/setup`, select "Tradier" platform, and enter:
 - `email`, `password` (for new users)
-- `platform` (e.g., 'tradier')
 - `environment` ('sandbox' or 'production')
-- `access_token`, `account_number`
+- `access_token` (Tradier API token)
+- `account_number`
+
+*Schwab (OAuth-based):*
+Navigate to `/setup`, select "Schwab" platform, click "Connect to Schwab":
+1. User is redirected to Schwab authorization page
+2. After authorization, Schwab redirects to `/setup/schwab/callback`
+3. Server exchanges authorization code for access/refresh tokens
+4. Server fetches account hashes and stores encrypted credentials
+5. Flow uses PKCE for security, state stored in `SchwabOAuthState` table
 
 ## Critical Implementation Details
 
@@ -192,9 +213,21 @@ Add to `claude_desktop_config.json`:
 
 ## Deployment Considerations
 
-- Set `SERVER_URL` environment variable to production URL (e.g., `https://api.example.com`)
+**Required Environment Variables:**
+- `JWT_SECRET_KEY` - Secret key for signing JWT tokens
+- `ENCRYPTION_KEY` - Fernet key for encrypting credentials
+- `SERVER_URL` - Full server URL (e.g., `https://your-app.railway.app`)
+- `DATABASE_URL` - PostgreSQL connection string (automatically set by Railway)
+
+**Optional for Schwab:**
+- `SCHWAB_APP_KEY` - Schwab application key
+- `SCHWAB_APP_SECRET` - Schwab application secret
+- `SCHWAB_CALLBACK_URL` - OAuth callback URL (defaults to `{SERVER_URL}/setup/schwab/callback`)
+
+**Best Practices:**
 - Use PostgreSQL for production (not SQLite) - set `DATABASE_URL`
 - Generate production `JWT_SECRET_KEY` and `ENCRYPTION_KEY`, store securely
 - Enable HTTPS (required by OAuth 2.1 for non-localhost)
 - Rate limiting is enabled via `slowapi` middleware
 - Database sessions are properly closed in middleware `finally` block
+- For Schwab OAuth callback, register `{SERVER_URL}/setup/schwab/callback` in Schwab developer portal

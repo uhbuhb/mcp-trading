@@ -109,11 +109,11 @@ async def protected_resource_metadata():
 
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_form(request: Request):
-    """Credential submission form for users to register their Tradier credentials."""
+    """Credential submission form for users to register their trading platform credentials."""
     # Check if user is authenticated via OAuth
     auth_header = request.headers.get("Authorization")
     user_email = None
-    
+
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
@@ -130,7 +130,7 @@ async def setup_form(request: Request):
                 db.close()
         except Exception:
             pass  # Not authenticated, show full form
-    
+
     email_field = f'<input type="email" id="email" name="email" value="{user_email}" required readonly>' if user_email else '<input type="email" id="email" name="email" required>'
     password_section = '' if user_email else '''
             <div class="form-group">
@@ -138,7 +138,7 @@ async def setup_form(request: Request):
                 <input type="password" id="password" name="password" required minlength="8">
             </div>
     '''
-    
+
     return HTMLResponse(f"""
     <!DOCTYPE html>
     <html>
@@ -153,33 +153,36 @@ async def setup_form(request: Request):
             button {{ background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }}
             button:hover {{ background: #0056b3; }}
             .warning {{ background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 4px; margin: 20px 0; }}
+            .hidden {{ display: none; }}
         </style>
     </head>
     <body>
         <h1>🔐 MCP Trading Server - Setup</h1>
-        
+
         <div class="warning">
-            <strong>⚠️ Security Notice:</strong> Your credentials will be encrypted and stored securely. 
+            <strong>⚠️ Security Notice:</strong> Your credentials will be encrypted and stored securely.
             This page must only be accessed over HTTPS in production.
         </div>
-        
-        <form method="post" action="/setup">
+
+        <form method="post" action="/setup" id="setupForm">
             <div class="form-group">
                 <label for="email">Email:</label>
                 {email_field}
             </div>
-            
+
             {password_section}
-            
+
             <h2>Trading Platform Credentials</h2>
-            
+
             <div class="form-group">
                 <label for="platform">Platform:</label>
-                <select id="platform" name="platform" required>
+                <select id="platform" name="platform" required onchange="togglePlatformFields()">
+                    <option value="">-- Select Platform --</option>
                     <option value="tradier">Tradier</option>
+                    <option value="schwab">Schwab</option>
                 </select>
             </div>
-            
+
             <div class="form-group">
                 <label for="environment">Environment:</label>
                 <select id="environment" name="environment" required>
@@ -187,21 +190,80 @@ async def setup_form(request: Request):
                     <option value="production">Production (Real Money)</option>
                 </select>
             </div>
-            
-            <div class="form-group">
-                <label for="access_token">Access Token:</label>
-                <input type="text" id="access_token" name="access_token" required 
-                       placeholder="Your Tradier API access token">
+
+            <!-- Tradier-specific fields -->
+            <div id="tradier-fields" class="hidden">
+                <div class="form-group">
+                    <label for="access_token">Access Token:</label>
+                    <input type="text" id="access_token" name="access_token"
+                           placeholder="Your Tradier API access token">
+                </div>
+
+                <div class="form-group">
+                    <label for="account_number">Account Number:</label>
+                    <input type="text" id="account_number" name="account_number"
+                           placeholder="Your Tradier account number">
+                </div>
+
+                <button type="submit">Register Credentials</button>
             </div>
-            
-            <div class="form-group">
-                <label for="account_number">Account Number:</label>
-                <input type="text" id="account_number" name="account_number" required 
-                       placeholder="Your Tradier account number">
+
+            <!-- Schwab-specific fields -->
+            <div id="schwab-fields" class="hidden">
+                <div class="warning">
+                    <strong>ℹ️ Schwab OAuth:</strong> You'll be redirected to Schwab to authorize access.
+                    Make sure SCHWAB_APP_KEY and SCHWAB_APP_SECRET are set in environment variables.
+                </div>
+                <button type="button" onclick="initiateSchwabOAuth()">Connect to Schwab</button>
             </div>
-            
-            <button type="submit">Register Credentials</button>
         </form>
+
+        <script>
+            function togglePlatformFields() {{
+                const platform = document.getElementById('platform').value;
+                const tradierFields = document.getElementById('tradier-fields');
+                const schwabFields = document.getElementById('schwab-fields');
+                const accessToken = document.getElementById('access_token');
+                const accountNumber = document.getElementById('account_number');
+
+                if (platform === 'tradier') {{
+                    tradierFields.classList.remove('hidden');
+                    schwabFields.classList.add('hidden');
+                    accessToken.required = true;
+                    accountNumber.required = true;
+                }} else if (platform === 'schwab') {{
+                    tradierFields.classList.add('hidden');
+                    schwabFields.classList.remove('hidden');
+                    accessToken.required = false;
+                    accountNumber.required = false;
+                }} else {{
+                    tradierFields.classList.add('hidden');
+                    schwabFields.classList.add('hidden');
+                    accessToken.required = false;
+                    accountNumber.required = false;
+                }}
+            }}
+
+            function initiateSchwabOAuth() {{
+                const email = document.getElementById('email').value;
+                const password = document.getElementById('password')?.value || '';
+                const environment = document.getElementById('environment').value;
+
+                if (!email || !environment) {{
+                    alert('Please fill in email and environment before connecting to Schwab');
+                    return;
+                }}
+
+                // Store form data in URL params for OAuth callback
+                const params = new URLSearchParams({{
+                    email: email,
+                    password: password,
+                    environment: environment
+                }});
+
+                window.location.href = `/setup/schwab/initiate?${{params.toString()}}`;
+            }}
+        </script>
     </body>
     </html>
     """)
@@ -232,7 +294,7 @@ async def setup_credentials(
     logger.info(f"Setting up credentials for {email} on {platform} ({environment})")
     
     # Validate platform
-    if platform not in ["tradier"]:
+    if platform not in ["tradier", "schwab"]:
         raise HTTPException(400, "Unsupported platform")
     
     if environment not in ["sandbox", "production"]:
@@ -345,6 +407,316 @@ async def setup_credentials(
     </body>
     </html>
     """)
+
+# ============================================================================
+# SCHWAB OAUTH SETUP FLOW
+# ============================================================================
+
+@router.get("/setup/schwab/initiate")
+async def schwab_oauth_initiate(
+    email: str,
+    environment: str,
+    password: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Initiate Schwab OAuth flow for credential setup.
+
+    This endpoint:
+    1. Validates environment variables (SCHWAB_APP_KEY, etc.)
+    2. Generates OAuth state and PKCE code verifier
+    3. Stores state in database for callback verification
+    4. Redirects user to Schwab authorization page
+    """
+    logger.info(f"Initiating Schwab OAuth for {email} ({environment})")
+
+    # Validate environment
+    if environment not in ["sandbox", "production"]:
+        raise HTTPException(400, "Invalid environment")
+
+    # Validate required environment variables
+    app_key = os.getenv("SCHWAB_APP_KEY")
+    app_secret = os.getenv("SCHWAB_APP_SECRET")
+    callback_url = os.getenv("SCHWAB_CALLBACK_URL")
+
+    if not app_key or not app_secret:
+        raise HTTPException(
+            500,
+            "Server misconfigured: SCHWAB_APP_KEY and SCHWAB_APP_SECRET must be set"
+        )
+
+    if not callback_url:
+        # Default to SERVER_URL + /setup/schwab/callback
+        callback_url = f"{SERVER_URL}/setup/schwab/callback"
+
+    # Generate OAuth state and PKCE code verifier
+    state = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(32)
+
+    # Calculate code challenge (SHA256 of verifier)
+    code_challenge = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge_b64 = code_challenge.hex()
+
+    # Store state in database (expires in 10 minutes)
+    from database import SchwabOAuthState
+    oauth_state = SchwabOAuthState(
+        state=state,
+        email=email,
+        password=password,
+        environment=environment,
+        code_verifier=code_verifier,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
+    )
+    db.add(oauth_state)
+    db.commit()
+
+    # Build Schwab authorization URL
+    auth_params = {
+        "response_type": "code",
+        "client_id": app_key,
+        "redirect_uri": callback_url,
+        "state": state,
+        "code_challenge": code_challenge_b64,
+        "code_challenge_method": "S256"
+    }
+
+    auth_url = f"https://api.schwabapi.com/v1/oauth/authorize?{urlencode(auth_params)}"
+
+    logger.info(f"Redirecting to Schwab OAuth: {auth_url}")
+    return RedirectResponse(auth_url)
+
+@router.get("/setup/schwab/callback")
+async def schwab_oauth_callback(
+    code: str,
+    state: str,
+    session: Optional[str] = None,  # Schwab also sends a session parameter
+    db: Session = Depends(get_db)
+):
+    """
+    Handle OAuth callback from Schwab.
+
+    This endpoint:
+    1. Validates state parameter
+    2. Exchanges authorization code for tokens
+    3. Fetches user's Schwab account hashes
+    4. Creates/updates user and stores encrypted credentials
+    """
+    logger.info(f"Received Schwab OAuth callback - code: {code}, state: {state}, session: {session}")
+    logger.info(f"Code length: {len(code)}, State length: {len(state)}")
+    logger.info(f"Code first 50 chars: {code[:50]}...")
+    logger.info(f"State first 50 chars: {state[:50]}...")
+
+    # Retrieve and validate state
+    from database import SchwabOAuthState
+    oauth_state = db.query(SchwabOAuthState).filter(SchwabOAuthState.state == state).first()
+
+    if not oauth_state:
+        raise HTTPException(400, "Invalid or expired OAuth state")
+
+    # Handle timezone-aware comparison - ensure both datetimes are timezone-aware
+    current_time = datetime.now(timezone.utc)
+    expires_at = oauth_state.expires_at
+    
+    # If expires_at is naive, assume it's UTC
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    
+    if expires_at < current_time:
+        db.delete(oauth_state)
+        db.commit()
+        raise HTTPException(400, "OAuth state expired - please try again")
+
+    # Get environment variables
+    app_key = os.getenv("SCHWAB_APP_KEY")
+    app_secret = os.getenv("SCHWAB_APP_SECRET")
+    callback_url = os.getenv("SCHWAB_CALLBACK_URL", f"{SERVER_URL}/setup/schwab/callback")
+
+    try:
+        # Debug logging for environment variables and request details
+        logger.info(f"SERVER_URL: {SERVER_URL}")
+        logger.info(f"app_key: {app_key}")
+        logger.info(f"app_secret: {'***' if app_secret else 'None'}")
+        logger.info(f"callback_url: {callback_url}")
+        logger.info(f"code: {code}")
+        logger.info(f"code_verifier: {oauth_state.code_verifier}")
+        logger.info(f"environment: {oauth_state.environment}")
+
+        # Exchange authorization code for tokens via HTTP request
+        import httpx
+
+        # Prepare token exchange request
+        token_url = "https://api.schwabapi.com/v1/oauth/token"
+        token_data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": callback_url,
+            "code_verifier": oauth_state.code_verifier,
+            "client_id": app_key,
+            "client_secret": app_secret
+        }
+
+        logger.info(f"Token URL: {token_url}")
+        logger.info(f"Token data: {dict(token_data, client_secret='***' if token_data.get('client_secret') else None)}")
+
+        # Exchange code for tokens using Basic Authentication
+        import base64
+        
+        # Create Basic Auth header (client_id:client_secret base64 encoded)
+        credentials = f"{app_key}:{app_secret}"
+        basic_auth = base64.b64encode(credentials.encode()).decode()
+        
+        headers = {
+            "Authorization": f"Basic {basic_auth}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        # Remove client_id and client_secret from body since they're in the header
+        token_data_auth = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": callback_url,
+            "code_verifier": oauth_state.code_verifier
+        }
+        
+        logger.info(f"Using Basic Auth header: Authorization: Basic {basic_auth[:20]}...")
+        logger.info(f"Token data (without credentials): {token_data_auth}")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(token_url, data=token_data_auth, headers=headers)
+            
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response headers: {dict(response.headers)}")
+            logger.info(f"Response text: {response.text}")
+
+            if response.status_code != 200:
+                logger.error(f"Token exchange failed: {response.text}")
+                raise HTTPException(500, f"Failed to exchange code for tokens: {response.text}")
+
+            token_response = response.json()
+
+        access_token = token_response.get("access_token")
+        refresh_token = token_response.get("refresh_token")
+        expires_in = token_response.get("expires_in", 1800)  # Default 30 minutes
+
+        if not access_token or not refresh_token:
+            raise HTTPException(500, "Missing tokens in Schwab response")
+
+        # Fetch account hashes
+        async with httpx.AsyncClient() as client:
+            accounts_response = await client.get(
+                "https://api.schwabapi.com/trader/v1/accounts/accountNumbers",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+
+            logger.info(f"Accounts response status: {accounts_response.status_code}")
+            logger.info(f"Accounts response text: {accounts_response.text}")
+
+            if accounts_response.status_code != 200:
+                logger.error(f"Failed to fetch accounts: {accounts_response.text}")
+                raise HTTPException(500, "Failed to fetch Schwab accounts")
+
+            accounts = accounts_response.json()
+
+        # For now, use the first account (we can add account selection UI later)
+        if not accounts or len(accounts) == 0:
+            raise HTTPException(500, "No Schwab accounts found")
+
+        account_hash = accounts[0].get("hashValue")
+        account_number = accounts[0].get("accountNumber", "N/A")
+
+        if not account_hash:
+            raise HTTPException(500, "Account hash missing from Schwab response")
+
+        # Create or authenticate user
+        user = db.query(User).filter(User.email == oauth_state.email).first()
+
+        if user is None:
+            if not oauth_state.password:
+                raise HTTPException(400, "Password required for new user")
+
+            # Create new user
+            password_hash = hash_password(oauth_state.password)
+            user = User(email=oauth_state.email, password_hash=password_hash)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            logger.info(f"Created new user: {user.user_id}")
+        else:
+            if oauth_state.password:
+                # Verify password for existing user
+                if not verify_password(oauth_state.password, user.password_hash):
+                    raise HTTPException(401, "Invalid credentials")
+            logger.info(f"Using existing user: {user.user_id}")
+
+        # Store credentials using auth_utils
+        from auth_utils import store_user_trading_credentials
+        token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+        store_user_trading_credentials(
+            user_id=str(user.user_id),
+            platform="schwab",
+            environment=oauth_state.environment,
+            access_token=access_token,
+            account_number=account_number,
+            db=db,
+            refresh_token=refresh_token,
+            account_hash=account_hash,
+            token_expires_at=token_expires_at
+        )
+
+        # Clean up OAuth state
+        db.delete(oauth_state)
+        db.commit()
+
+        logger.info(f"Successfully stored Schwab credentials for user {user.user_id}")
+
+        # Return success page
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Schwab Setup Complete</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                .success {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; }}
+                .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
+            </style>
+        </head>
+        <body>
+            <div class="success">
+                <h2>✅ Schwab Credentials Registered Successfully!</h2>
+                <p>Your Schwab credentials for {oauth_state.environment} have been encrypted and stored.</p>
+            </div>
+
+            <div class="info">
+                <h3>Next Steps:</h3>
+                <ol>
+                    <li>Your User ID: <code>{user.user_id}</code></li>
+                    <li>Account Hash: <code>{account_hash}</code></li>
+                    <li>You can now configure your MCP client to connect to this server</li>
+                    <li>The client will handle OAuth authentication automatically</li>
+                </ol>
+            </div>
+
+            <p><a href="/setup">Register another credential →</a></p>
+        </body>
+        </html>
+        """)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Schwab OAuth callback failed: {e}")
+
+        # Clean up OAuth state on error
+        try:
+            db.delete(oauth_state)
+            db.commit()
+        except:
+            pass
+
+        raise HTTPException(500, f"Schwab OAuth failed: {str(e)}")
 
 # ============================================================================
 # OAUTH AUTHORIZATION FLOW

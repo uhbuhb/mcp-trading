@@ -25,44 +25,106 @@ class SchwabClient(TradingPlatformInterface):
                  app_key: Optional[str] = None, app_secret: Optional[str] = None,
                  token_expires_at: Optional[datetime] = None, token_path: Optional[str] = None):
         """
-        Initialize the Schwab client using easy_client for simplified authentication.
+        Initialize the Schwab client using stored tokens for API access.
 
         Args:
-            access_token: OAuth access token (for compatibility, but easy_client handles auth)
-            refresh_token: OAuth refresh token (for compatibility, but easy_client handles auth)
+            access_token: OAuth access token
+            refresh_token: OAuth refresh token
             account_hash: Schwab account hash
             app_key: Schwab app key (defaults to env var)
             app_secret: Schwab app secret (defaults to env var)
-            token_expires_at: When the access token expires (for compatibility)
-            token_path: Path to store authentication tokens (defaults to /tmp/schwab_token.json)
+            token_expires_at: When the access token expires
+            token_path: Path to store authentication tokens (unused, kept for compatibility)
         """
         self.account_hash = account_hash
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.token_expires_at = token_expires_at
         self.app_key = app_key or os.getenv("SCHWAB_APP_KEY")
         self.app_secret = app_secret or os.getenv("SCHWAB_APP_SECRET")
         
-        # Set default token path if not provided
-        if not token_path:
-            token_path = os.path.join(os.path.expanduser("~"), ".schwab_token.json")
-        
-        # Validate required environment variables
+        # Validate required parameters
         if not self.app_key:
             raise ValueError("SCHWAB_APP_KEY environment variable is required")
         if not self.app_secret:
             raise ValueError("SCHWAB_APP_SECRET environment variable is required")
+        if not access_token:
+            raise ValueError("access_token is required")
+        if not refresh_token:
+            raise ValueError("refresh_token is required")
+        if not account_hash:
+            raise ValueError("account_hash is required")
         
-        # Initialize Schwab client using easy_client
-        # This handles authentication, token refresh, and session management automatically
-        self.client = easy_client(
-            api_key=self.app_key,
-            app_secret=self.app_secret,
-            callback_url='https://127.0.0.1:8080',
-            token_path=token_path
-        )
+        # Initialize HTTP client for direct API calls
+        import httpx
+        self.http_client = httpx.Client()
+        
+        logger.info(f"Initialized SchwabClient for account hash: {account_hash[:8]}...")
 
     def _check_token_refresh(self):
-        """Token refresh is handled automatically by easy_client."""
-        # easy_client handles token refresh automatically, so this method is now a no-op
-        pass
+        """Check if token needs refresh and refresh if necessary."""
+        if not self.token_expires_at:
+            return  # No expiration info, assume token is valid
+        
+        # Check if token expires in the next 5 minutes
+        current_time = datetime.now(timezone.utc)
+        
+        # Handle timezone-aware comparison - ensure both datetimes are timezone-aware
+        expires_at = self.token_expires_at
+        # If expires_at is naive, assume it's UTC
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        
+        if expires_at > current_time + timedelta(minutes=5):
+            return  # Token is still valid
+        
+        logger.info("Access token expired or expiring soon, refreshing...")
+        self._refresh_access_token()
+    
+    def _refresh_access_token(self):
+        """Refresh the access token using the refresh token."""
+        import base64
+        
+        # Prepare refresh request
+        token_url = "https://api.schwabapi.com/v1/oauth/token"
+        
+        # Create Basic Auth header
+        credentials = f"{self.app_key}:{self.app_secret}"
+        basic_auth = base64.b64encode(credentials.encode()).decode()
+        
+        headers = {
+            "Authorization": f"Basic {basic_auth}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token
+        }
+        
+        try:
+            response = self.http_client.post(token_url, data=data, headers=headers)
+            response.raise_for_status()
+            
+            token_response = response.json()
+            
+            # Update tokens
+            self.access_token = token_response["access_token"]
+            if "refresh_token" in token_response:
+                self.refresh_token = token_response["refresh_token"]
+            
+            # Update expiration time
+            expires_in = token_response.get("expires_in", 1800)  # Default 30 minutes
+            self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            
+            logger.info("Successfully refreshed access token")
+            
+            # TODO: Update stored credentials in database
+            # This would require access to the database session
+            
+        except Exception as e:
+            logger.error(f"Failed to refresh access token: {e}")
+            raise
 
     def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -78,10 +140,16 @@ class SchwabClient(TradingPlatformInterface):
         account_to_use = account_id or self.account_hash
 
         try:
-            response = self.client.get_account(account_to_use)
-            # easy_client returns httpx.Response objects, so we need to check status and get JSON
-            if response.status_code != 200:
-                raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json"
+            }
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
+            response = self.http_client.get(url, headers=headers)
+            response.raise_for_status()
+            
             data = response.json()
 
             if 'securitiesAccount' in data:
@@ -129,12 +197,18 @@ class SchwabClient(TradingPlatformInterface):
         account_to_use = account_id or self.account_hash
 
         try:
-            # Import client here to avoid circular import issues
-            from schwab import client
-            response = self.client.get_account(account_to_use, fields=client.Client.Account.Fields.POSITIONS)
-            # easy_client returns httpx.Response objects, so we need to check status and get JSON
-            if response.status_code != 200:
-                raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json"
+            }
+            
+            # Get account with positions
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
+            params = {"fields": "positions"}
+            response = self.http_client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
             data = response.json()
 
             if 'securitiesAccount' in data and 'positions' in data['securitiesAccount']:
@@ -181,10 +255,17 @@ class SchwabClient(TradingPlatformInterface):
         self._check_token_refresh()
 
         try:
-            response = self.client.get_quote(symbol)
-            # easy_client returns httpx.Response objects, so we need to check status and get JSON
-            if response.status_code != 200:
-                raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json"
+            }
+            
+            url = f"https://api.schwabapi.com/marketdata/v1/quotes"
+            params = {"symbols": symbol}
+            response = self.http_client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
             data = response.json()
 
             if symbol in data:
@@ -226,10 +307,16 @@ class SchwabClient(TradingPlatformInterface):
         account_to_use = account_id or self.account_hash
 
         try:
-            response = self.client.get_account(account_to_use)
-            # easy_client returns httpx.Response objects, so we need to check status and get JSON
-            if response.status_code != 200:
-                raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json"
+            }
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
+            response = self.http_client.get(url, headers=headers)
+            response.raise_for_status()
+            
             data = response.json()
 
             if 'securitiesAccount' in data:
@@ -275,18 +362,32 @@ class SchwabClient(TradingPlatformInterface):
         account_to_use = account_id or self.account_hash
 
         try:
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json"
+            }
+            
             # Get orders from last 60 days
             from_date = datetime.now() - timedelta(days=60)
             to_date = datetime.now()
-
-            response = self.client.get_orders_for_account(
-                account_to_use,
-                from_entered_datetime=from_date,
-                to_entered_datetime=to_date
-            )
-            # easy_client returns httpx.Response objects, so we need to check status and get JSON
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}/orders"
+            params = {
+                "fromEnteredTime": from_date.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "toEnteredTime": to_date.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "maxResults": 500
+            }
+            
+            logger.info(f"Requesting orders from URL: {url}")
+            logger.info(f"Request params: {params}")
+            
+            response = self.http_client.get(url, headers=headers, params=params)
+            
             if response.status_code != 200:
-                raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+                logger.error(f"Orders API error: {response.status_code} - {response.text}")
+                response.raise_for_status()
+            
             data = response.json()
 
             if isinstance(data, list):
@@ -475,10 +576,16 @@ class SchwabClient(TradingPlatformInterface):
                     "order_spec": order.build()
                 }
             else:
-                response = self.client.place_order(account_id, order)
-                # easy_client returns httpx.Response objects, so we need to check status and get JSON
-                if response.status_code != 200:
-                    raise Exception(f"Order placement failed with status {response.status_code}: {response.text}")
+                # Make direct API call to Schwab
+                headers = {
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
+                
+                url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders"
+                response = self.http_client.post(url, headers=headers, json=order.build())
+                response.raise_for_status()
                 return response.json()
 
         except Exception as e:
@@ -530,10 +637,15 @@ class SchwabClient(TradingPlatformInterface):
                 existing_order['duration'] = duration
             
             # Replace the order with the modified version
-            response = self.client.replace_order(order_id, account_id, existing_order)
-            # easy_client returns httpx.Response objects, so we need to check status and get JSON
-            if response.status_code != 200:
-                raise Exception(f"Order modification failed with status {response.status_code}: {response.text}")
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            }
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
+            response = self.http_client.put(url, headers=headers, json=existing_order)
+            response.raise_for_status()
             return response.json()
 
         except Exception as e:
@@ -554,10 +666,15 @@ class SchwabClient(TradingPlatformInterface):
         self._check_token_refresh()
 
         try:
-            response = self.client.cancel_order(order_id, account_id)
-            # easy_client returns httpx.Response objects, so we need to check status
-            if response.status_code != 200:
-                raise Exception(f"Order cancellation failed with status {response.status_code}: {response.text}")
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json"
+            }
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
+            response = self.http_client.delete(url, headers=headers)
+            response.raise_for_status()
             return {"status": "success", "message": f"Order {order_id} cancelled"}
 
         except Exception as e:

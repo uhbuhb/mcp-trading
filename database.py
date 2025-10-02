@@ -103,6 +103,18 @@ class OAuthToken(Base):
     user = relationship("User", back_populates="oauth_tokens")
     client = relationship("OAuthClient", back_populates="oauth_tokens")
 
+class SchwabOAuthState(Base):
+    """Temporary state storage for Schwab OAuth flow."""
+    __tablename__ = "schwab_oauth_states"
+
+    state = Column(String, primary_key=True)  # OAuth state parameter
+    email = Column(String, nullable=False)
+    password = Column(String, nullable=True)  # For new users
+    environment = Column(String, nullable=False)  # 'sandbox' or 'production'
+    code_verifier = Column(String, nullable=False)  # PKCE code verifier
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 # Database connection
 def get_database_url() -> str:
     """Get database URL from environment or use local SQLite for development."""
