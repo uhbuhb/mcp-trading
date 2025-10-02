@@ -254,28 +254,41 @@ async def place_multileg_order(
     ctx: Context,
     symbol: str,
     legs: str,
-    account_id: Optional[str] = None,
-    platform: str = "tradier",
-    use_sandbox: bool = True,
-    order_type: str = "market",
+    platform: str,
+    order_type: str = "limit",
+    price: Optional[str] = None,
+    session: str = "normal",
     duration: str = "day",
-    preview: bool = False,
-    price: Optional[float] = None
+    preview: bool = True,
+    account_id: Optional[str] = None,
+    use_sandbox: bool = True,
+    
 ) -> str:
     """
-    Place a multileg order (spread trade) or preview it.
+    Place a multileg option order or preview it. If preview value isnt specified, ask user if they want to preview
+    the order or actually place it and set preview value accordingly. Same for the other parameters, if they arent 
+    specified suggest a value and ask the user if they want something else.
     
     Args:
         ctx: FastMCP Context (automatically injected)
         symbol: Underlying symbol (e.g., 'AAPL')
-        legs: JSON string containing array of leg objects
+        legs: JSON string containing array of leg objects with OCC format:
+              [{"option_symbol": "V     251017C00340000", "side": "buy_to_open", "quantity": 1}]
+              Option symbols in OCC format: [SYMBOL padded with spaces to 6 characters][YYMMDD][C/P][STRIKE padded to 8 digits]
+              Example: "V251017C00340000" (V call, Oct 17 2025, $340 strike)
+              Note: Option symbols are validated and converted automatically for each platform
         account_id: Optional account ID override
-        platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
-        order_type: Order type ('market', 'credit', 'debit', 'even')
+        platform: Trading platform (currently only 'tradier' and 'schwab' are supported)
+        use_sandbox: Use sandbox environment (default: True but only relevant for tradier platform)
+        order_type: Order type ('market' or 'limit')
         duration: Order duration ('day', 'gtc')
-        preview: Preview without executing (default: False)
-        price: Net price for limit orders
+        preview: Preview to check if the order would be accepted. This should always be done before placing the order.  (default: True)
+        price: Net price for limit orders (as string):
+               - Positive: Debit order (pay premium)
+               - Negative: Credit order (receive  premium)
+               - Cant be zero!!
+               - Ignored for market orders
+        session: Trading session ('normal', 'am', 'pm', 'seamless')
     
     Returns:
         JSON string containing order response
@@ -284,7 +297,12 @@ async def place_multileg_order(
 
     try:
         environment = "sandbox" if use_sandbox else "production"
+        logger.info(f"=== MCP TOOL CALLED ===")
         logger.info(f"place_multileg_order - user: {user_id}, symbol: {symbol}, preview: {preview}")
+        logger.info(f"price parameter: {price} (type: {type(price)})")
+        logger.info(f"order_type: {order_type}, duration: {duration}")
+        logger.info(f"platform: {platform}, use_sandbox: {use_sandbox}")
+        logger.info(f"legs parameter: {legs} (type: {type(legs)})")
 
         # Validate
         if not symbol:
@@ -299,16 +317,45 @@ async def place_multileg_order(
         client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
         account_to_use = account_id or db_account_number
 
+        # Convert price from string to float if provided
+        logger.info(f"=== PRICE CONVERSION ===")
+        logger.info(f"Original price: {price} (type: {type(price)})")
+        price_float = None
+        if price is not None:
+            try:
+                price_float = float(price)
+                logger.info(f"Converted price to float: {price_float} (type: {type(price_float)})")
+            except (ValueError, TypeError) as e:
+                logger.error(f"Price conversion failed: {e}")
+                raise TradingPlatformError(f"Invalid price format: {price}. Must be a valid number.")
+        else:
+            logger.info("Price is None, keeping as None")
+
         # Place order
+        logger.info(f"=== CALLING CLIENT ===")
+        logger.info(f"Calling client.place_multileg_order with:")
+        logger.info(f"  account_id: {account_to_use}")
+        logger.info(f"  symbol: {symbol}")
+        logger.info(f"  legs: {legs_data}")
+        logger.info(f"  order_type: {order_type}")
+        logger.info(f"  duration: {duration}")
+        logger.info(f"  preview: {preview}")
+        logger.info(f"  price: {price_float} (type: {type(price_float)})")
+        
         response = client.place_multileg_order(
             account_id=account_to_use,
             symbol=symbol,
             legs=legs_data,
             order_type=order_type,
             duration=duration,
+            session=session,
             preview=preview,
-            price=price
+            price=price_float,
         )
+        
+        logger.info(f"=== CLIENT RESPONSE ===")
+        logger.info(f"Response type: {type(response)}")
+        logger.info(f"Response: {response}")
 
         return json.dumps({
             "status": "success",
@@ -319,7 +366,10 @@ async def place_multileg_order(
         }, indent=2)
 
     except Exception as e:
-        logger.error(f"Failed to place order: {e}", exc_info=True)
+        logger.error(f"=== EXCEPTION CAUGHT ===")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Exception message: {str(e)}")
+        logger.error(f"Full traceback:", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
     finally:
         db.close()

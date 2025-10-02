@@ -4,6 +4,7 @@ Handles all API interactions with the Schwab trading platform using schwab-py li
 """
 
 import os
+import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta, timezone
@@ -12,10 +13,12 @@ from schwab.orders.equities import equity_buy_market, equity_sell_market
 from schwab.orders.options import option_buy_to_open_market, option_sell_to_close_market
 from schwab.orders.generic import OrderBuilder
 from schwab.orders.common import OrderType, Duration, Session, OrderStrategyType
-from schwab.orders.common import ComplexOrderStrategyType, OptionInstruction, EquityInstruction
+from schwab.orders.common import OptionInstruction
 from trading_platform_interface import TradingPlatformInterface
+from option_symbol_utils import convert_occ_to_schwab_format
 
 logger = logging.getLogger("schwab_client")
+
 
 
 class SchwabClient(TradingPlatformInterface):
@@ -403,21 +406,20 @@ class SchwabClient(TradingPlatformInterface):
                                     order_type: str = 'market',
                                     price: Optional[float] = None,
                                     duration: str = 'day',
-                                    session: str = 'normal',
-                                    complex_strategy_type: Optional[str] = None) -> OrderBuilder:
+                                    session: str = 'normal') -> OrderBuilder:
         """
         Create a multi-leg option order using OrderBuilder.
 
         Args:
-            legs: List of leg dictionaries, each containing:
-                - symbol: Option symbol (e.g., 'AAPL_011724C150')
-                - instruction: 'BUY_TO_OPEN', 'SELL_TO_OPEN', 'BUY_TO_CLOSE', 'SELL_TO_CLOSE'
+            legs: List of standardized leg dictionaries, each containing:
+                - option_symbol: OCC format option symbol (e.g., 'V     251017C00340000')
+                - side: Order side ('buy_to_open', 'sell_to_open', 'buy_to_close', 'sell_to_close')
                 - quantity: Number of contracts
-            order_type: Order type ('market', 'limit', 'stop', 'stop_limit')
-            price: Limit price (required for limit orders)
+            order_type: Order type ('market' or 'limit')
+            price: Net price for limit orders (positive for credit, negative for debit, CANT BE ZERO!!)
             duration: Order duration ('day', 'gtc', 'pre', 'post')
             session: Trading session ('normal', 'am', 'pm', 'seamless')
-            complex_strategy_type: Complex strategy type for spreads (e.g., 'VERTICAL', 'STRADDLE')
+            
 
         Returns:
             OrderBuilder object ready for placement
@@ -426,26 +428,23 @@ class SchwabClient(TradingPlatformInterface):
             # Create OrderBuilder
             order = OrderBuilder()
 
-            # Set order type
+
+            # Set order type - transform interface format to Schwab format
+            logger.info(f"create_multi_leg_option_order: order_type={order_type}, price={price} (type: {type(price)})")
             if order_type == 'market':
                 order.set_order_type(OrderType.MARKET)
             elif order_type == 'limit':
-                order.set_order_type(OrderType.LIMIT)
-                if price is None:
-                    raise ValueError("Price is required for limit orders")
-                order.set_price(price)
-            elif order_type == 'stop':
-                order.set_order_type(OrderType.STOP)
-                if price is None:
-                    raise ValueError("Stop price is required for stop orders")
-                order.set_stop_price(price)
-            elif order_type == 'stop_limit':
-                order.set_order_type(OrderType.STOP_LIMIT)
-                if price is None:
-                    raise ValueError("Stop price is required for stop_limit orders")
-                order.set_stop_price(price)
+                if price is None or price == 0:
+                    raise ValueError("Limit order requires a price")
+                if price > 0:
+                    order.set_order_type(OrderType.NET_DEBIT)
+                if price < 0:
+                    order.set_order_type(OrderType.NET_CREDIT)
+
+                logger.info(f"Setting price to: {str(price)}")
+                order.set_price(str(price))  # Schwab expects price as string
             else:
-                raise ValueError(f"Unsupported order type: {order_type}")
+                raise ValueError(f"Unsupported order type: {order_type}. Only 'market' and 'limit' are supported.")
 
             # Set duration
             if duration == 'gtc':
@@ -467,46 +466,40 @@ class SchwabClient(TradingPlatformInterface):
             else:
                 order.set_session(Session.NORMAL)
 
-            # Set complex strategy type if provided
-            if complex_strategy_type:
-                strategy_map = {
-                    'VERTICAL': ComplexOrderStrategyType.VERTICAL,
-                    'HORIZONTAL': ComplexOrderStrategyType.HORIZONTAL,
-                    'DIAGONAL': ComplexOrderStrategyType.DIAGONAL,
-                    'STRADDLE': ComplexOrderStrategyType.STRADDLE,
-                    'STRANGLE': ComplexOrderStrategyType.STRANGLE,
-                    'BUTTERFLY': ComplexOrderStrategyType.BUTTERFLY,
-                    'CONDOR': ComplexOrderStrategyType.CONDOR,
-                    'IRON_CONDOR': ComplexOrderStrategyType.IRON_CONDOR,
-                    'COLLAR': ComplexOrderStrategyType.COLLAR_SYNTHETIC,
-                    'CUSTOM': ComplexOrderStrategyType.CUSTOM
-                }
-                if complex_strategy_type.upper() in strategy_map:
-                    order.set_complex_order_strategy_type(strategy_map[complex_strategy_type.upper()])
+            # Set order strategy type - required for multileg orders
+            order.set_order_strategy_type(OrderStrategyType.SINGLE)
 
-            # Add legs
+            # Add legs - transform standardized format to Schwab format
             for leg in legs:
-                symbol = leg.get('symbol')
-                instruction = leg.get('instruction')
+                option_symbol = leg.get('option_symbol')
+                side = leg.get('side')
                 quantity = leg.get('quantity')
 
-                if not all([symbol, instruction, quantity]):
-                    raise ValueError("Each leg must have 'symbol', 'instruction', and 'quantity'")
+                if not all([option_symbol, side, quantity]):
+                    raise ValueError("Each leg must have 'option_symbol', 'side', and 'quantity'")
 
-                # Map instruction strings to OptionInstruction enum
+                # Convert OCC option symbol to Schwab format
+                try:
+                    schwab_symbol = convert_occ_to_schwab_format(option_symbol)
+                    logger.info(f"Converted option symbol: '{option_symbol}' -> '{schwab_symbol}' (length: {len(schwab_symbol)})")
+                except Exception as e:
+                    logger.error(f"Failed to convert option symbol {option_symbol}: {e}")
+                    raise ValueError(f"Invalid option symbol format: {option_symbol}")
+
+                # Map standardized side strings to Schwab instruction enum
                 instruction_map = {
-                    'BUY_TO_OPEN': OptionInstruction.BUY_TO_OPEN,
-                    'SELL_TO_OPEN': OptionInstruction.SELL_TO_OPEN,
-                    'BUY_TO_CLOSE': OptionInstruction.BUY_TO_CLOSE,
-                    'SELL_TO_CLOSE': OptionInstruction.SELL_TO_CLOSE
+                    'buy_to_open': OptionInstruction.BUY_TO_OPEN,
+                    'sell_to_open': OptionInstruction.SELL_TO_OPEN,
+                    'buy_to_close': OptionInstruction.BUY_TO_CLOSE,
+                    'sell_to_close': OptionInstruction.SELL_TO_CLOSE
                 }
 
-                if instruction.upper() not in instruction_map:
-                    raise ValueError(f"Unsupported instruction: {instruction}")
+                if side.lower() not in instruction_map:
+                    raise ValueError(f"Unsupported side: {side}")
 
                 order.add_option_leg(
-                    symbol=symbol,
-                    instruction=instruction_map[instruction.upper()],
+                    symbol=schwab_symbol,
+                    instruction=instruction_map[side.lower()],
                     quantity=int(quantity)
                 )
 
@@ -517,24 +510,29 @@ class SchwabClient(TradingPlatformInterface):
             raise Exception(f"Multi-leg order creation failed: {e}")
 
     def place_multileg_order(self, account_id: str, symbol: str, legs: list, 
-                           order_type: str = 'market', duration: str = 'day', 
-                           preview: bool = False, price: Optional[float] = None) -> Dict[str, Any]:
+                           order_type: str = 'market', duration: str = 'day', session: str = 'normal',
+                           preview: bool = True, price: Optional[float] = None) -> Dict[str, Any]:
         """
         Place a multileg order (spread trade) or preview it.
         
         Args:
             account_id: Account hash
             symbol: Underlying symbol
-            legs: List of leg dictionaries with 'side', 'quantity', 'option_symbol'
-            order_type: Order type ('market', 'credit', 'debit', 'even', 'limit')
+            legs: List of standardized leg dictionaries, each containing:
+                - option_symbol: OCC format option symbol (e.g., 'V251017C00340000')
+                - side: Order side ('buy_to_open', 'sell_to_open', 'buy_to_close', 'sell_to_close')
+                - quantity: Number of contracts (integer)
+            order_type: Order type ('market' or 'limit')
             duration: Order duration ('day', 'gtc', etc.)
             preview: If True, preview the order without executing
-            price: Net price for limit orders (required for 'limit' order_type)
-            
+            price: Net price for limit orders (positive for credit, negative for debit, 0 for even)
+        
         Returns:
             Order response dictionary
         """
         self._check_token_refresh()
+        
+        logger.info(f"place_multileg_order called with price: {price} (type: {type(price)})")
 
         try:
             # Create OrderBuilder from the parameters
@@ -542,7 +540,8 @@ class SchwabClient(TradingPlatformInterface):
                 legs=legs,
                 order_type=order_type,
                 duration=duration,
-                price=price
+                session=session,
+                price=price,
             )
             
             # Use the existing place_multi_leg_option_order method
@@ -568,25 +567,27 @@ class SchwabClient(TradingPlatformInterface):
         self._check_token_refresh()
 
         try:
-            if preview:
-                # Schwab doesn't have a preview endpoint in the same way
-                return {
-                    "status": "preview", 
-                    "message": "Preview not supported, use with caution",
-                    "order_spec": order.build()
-                }
-            else:
-                # Make direct API call to Schwab
-                headers = {
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/json"
-                }
-                
-                url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders"
-                response = self.http_client.post(url, headers=headers, json=order.build())
-                response.raise_for_status()
-                return response.json()
+            # Make direct API call to Schwab
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            }
+            
+            # Build the order payload
+            order_payload = order.build()
+            logger.info(f"Schwab order payload: {json.dumps(order_payload, indent=2)}")
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders"
+            response = self.http_client.post(url, headers=headers, json=order_payload)
+            
+            # Log response details for debugging
+            if response.status_code != 200:
+                logger.error(f"Schwab API error: {response.status_code} - {response.text}")
+                logger.error(f"Request payload was: {json.dumps(order_payload, indent=2)}")
+            
+            response.raise_for_status()
+            return response.json()
 
         except Exception as e:
             logger.error(f"Failed to place multi-leg option order: {e}")

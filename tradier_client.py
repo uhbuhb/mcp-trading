@@ -410,11 +410,14 @@ class TradierClient(TradingPlatformInterface):
         Args:
             account_id: Account ID
             symbol: Underlying symbol
-            legs: List of leg dictionaries with 'side', 'quantity', 'option_symbol'
-            order_type: Order type ('market', 'credit', 'debit', 'even', 'limit')
+            legs: List of standardized leg dictionaries, each containing:
+                - option_symbol: OCC format option symbol (e.g., 'V251017C00340000')
+                - side: Order side ('buy_to_open', 'sell_to_open', 'buy_to_close', 'sell_to_close')
+                - quantity: Number of contracts (integer)
+            order_type: Order type ('market' or 'limit')
             duration: Order duration ('day', 'gtc', etc.)
             preview: If True, preview the order without executing
-            price: Net price for limit orders (required for 'limit' order_type)
+            price: Net price for limit orders (positive for debit, negative for credit)
             
         Returns:
             Order response dictionary
@@ -422,12 +425,32 @@ class TradierClient(TradingPlatformInterface):
         endpoint = f"/v1/accounts/{account_id}/orders"
                 
         # Build form parameters with indexed notation
+        # Transform interface format to Tradier format
+        if order_type == 'market':
+            tradier_order_type = 'market'
+            tradier_price = None
+        elif order_type == 'limit':
+            if price is None:
+                raise ValueError("Limit order requires a price")
+            
+            # Determine Tradier order type based on price
+            if price > 0:
+                tradier_order_type = 'debit'  # Positive price = debit spread
+            elif price < 0:
+                tradier_order_type = 'credit'   # Negative price = credit spread
+            else:
+                raise ValueError("Limit order cant be zero")
+            
+            tradier_price = abs(price) # Tradier uses absolute price
+        else:
+            raise ValueError(f"Unsupported order type: {order_type}. Only 'market' and 'limit' are supported.")
+        
         params = {
             'class': 'multileg',
             'symbol': symbol,
-            'type': order_type,
+            'type': tradier_order_type,
             'duration': duration,
-            'price': price
+            'price': tradier_price
         }
                 
         # Add preview parameter if requested
@@ -435,7 +458,12 @@ class TradierClient(TradingPlatformInterface):
             params['preview'] = 'true'
         
         # Add leg parameters using indexed notation (side[0], quantity[0], etc.)
+        # Transform standardized format to Tradier format
         for i, leg in enumerate(legs):
+            # Validate required fields
+            if not all(key in leg for key in ['option_symbol', 'side', 'quantity']):
+                raise ValueError("Each leg must have 'option_symbol', 'side', and 'quantity'")
+            
             params[f'side[{i}]'] = leg['side']
             params[f'quantity[{i}]'] = leg['quantity']
             params[f'option_symbol[{i}]'] = leg['option_symbol']

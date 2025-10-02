@@ -139,7 +139,7 @@ class TradingPlatformInterface(ABC):
     
     @abstractmethod
     def place_multileg_order(self, account_id: str, symbol: str, legs: list, 
-                           order_type: str = 'market', duration: str = 'day', 
+                           order_type: str = 'market', duration: str = 'day', session: str = 'normal',
                            preview: bool = False, price: Optional[float] = None) -> Dict[str, Any]:
         """
         Place a multileg order (spread trade) or preview it.
@@ -147,12 +147,22 @@ class TradingPlatformInterface(ABC):
         Args:
             account_id: Account ID
             symbol: Underlying symbol
-            legs: List of leg dictionaries with 'side', 'quantity', 'option_symbol'
-            order_type: Order type ('market', 'credit', 'debit', 'even', 'limit')
+            legs: List of standardized leg dictionaries, each containing:
+                - option_symbol: OCC format option symbol (e.g., 'V251017C00340000')
+                  Format: [SYMBOL][YYMMDD][C/P][STRIKE padded to 8 digits]
+                  Note: Option symbols are validated and converted automatically for each platform
+                - side: Order side ('buy_to_open', 'sell_to_open', 'buy_to_close', 'sell_to_close')
+                - quantity: Number of contracts (integer)
+            order_type: Order type ('market' or 'limit')
+                - 'market': Market order (no price specified)
+                - 'limit': Limit order with specific net price
             duration: Order duration ('day', 'gtc', etc.)
+            session: Trading session ('normal', 'am', 'pm', 'seamless')
             preview: If True, preview the order without executing
-            price: Net price for limit orders (required for 'limit' order_type)
-            
+            price: Net price for limit orders:
+                - For 'limit': specific net price (positive for debit, negative for credit, CANT BE ZERO!!)
+                - For 'market': None (ignored)
+        
         Returns:
             Order response dictionary
         """
