@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from tradier_client import TradierClient
 from auth_utils import get_user_trading_credentials
-from request_context import get_request_context
+from request_context import get_user_id
 
 # Configure logging
 logging.basicConfig(
@@ -45,21 +45,32 @@ class TradingPlatformError(Exception):
 def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
     """
     Extract user context from FastMCP Context.
-    
-    The user_id and db session are stored in contextvars by the middleware,
-    so we don't actually use the ctx parameter - but we keep it for consistency
-    with the tool signatures.
-    
+
+    The user_id is stored in contextvars by the middleware, but we create
+    a fresh database session for each tool call to avoid session conflicts.
+
     Args:
         ctx: FastMCP Context (not used, kept for signature compatibility)
-    
+
     Returns:
         Tuple of (user_id, db_session)
-    
+
     Raises:
         ValueError: If not authenticated
     """
-    return get_request_context()
+    # Get user_id from context (set by middleware)
+    from request_context import get_user_id
+    user_id = get_user_id()  # Raises ValueError if not authenticated
+
+    # Create a fresh database session for this tool call
+    from database import SessionLocal
+    if SessionLocal is None:
+        from database import init_session_local
+        init_session_local()
+
+    db = SessionLocal()
+    return user_id, db
+
 
 def get_trading_client_for_user(
     user_id: str,
@@ -127,10 +138,10 @@ async def get_positions(
     # Extract authenticated user context from FastMCP Context
     user_id, db = get_user_context_from_ctx(ctx)
     
-    environment = "sandbox" if use_sandbox else "production"
-    logger.info(f"get_positions - user: {user_id}, platform: {platform}, env: {environment}")
-    
     try:
+        environment = "sandbox" if use_sandbox else "production"
+        logger.info(f"get_positions - user: {user_id}, platform: {platform}, env: {environment}")
+        
         # Get user's trading client
         client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
         account_to_use = account_id or db_account_number
@@ -173,6 +184,9 @@ async def get_positions(
     except Exception as e:
         logger.error(f"Failed to get positions: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        # Always close the database session
+        db.close()
 
 @mcp.tool()
 async def get_quote(
@@ -194,24 +208,26 @@ async def get_quote(
         JSON string containing quote information
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
-    
-    logger.info(f"get_quote - symbol: {symbol}, user: {user_id}")
-    
+
     try:
+        environment = "sandbox" if use_sandbox else "production"
+        logger.info(f"get_quote - symbol: {symbol}, user: {user_id}")
+
         client, _ = get_trading_client_for_user(user_id, platform, environment, db)
         quote = client.get_quote(symbol)
-        
+
         return json.dumps({
             "status": "success",
             "message": f"Quote retrieved for {symbol}",
             "platform": platform,
             "quote": quote
         }, indent=2)
-        
+
     except Exception as e:
         logger.error(f"Failed to get quote: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def place_multileg_order(
@@ -245,24 +261,24 @@ async def place_multileg_order(
         JSON string containing order response
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
-    
-    logger.info(f"place_multileg_order - user: {user_id}, symbol: {symbol}, preview: {preview}")
-    
+
     try:
+        environment = "sandbox" if use_sandbox else "production"
+        logger.info(f"place_multileg_order - user: {user_id}, symbol: {symbol}, preview: {preview}")
+
         # Validate
         if not symbol:
             raise TradingPlatformError("Symbol is required")
-        
+
         # Parse legs
         legs_data = json.loads(legs)
         if not isinstance(legs_data, list) or len(legs_data) == 0:
             raise TradingPlatformError("Legs must be a non-empty array")
-        
+
         # Get client
         client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
         account_to_use = account_id or db_account_number
-        
+
         # Place order
         response = client.place_multileg_order(
             account_id=account_to_use,
@@ -273,7 +289,7 @@ async def place_multileg_order(
             preview=preview,
             price=price
         )
-        
+
         return json.dumps({
             "status": "success",
             "message": f"Order {'previewed' if preview else 'placed'} successfully",
@@ -281,10 +297,12 @@ async def place_multileg_order(
             "environment": environment,
             "response": response
         }, indent=2)
-        
+
     except Exception as e:
         logger.error(f"Failed to place order: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def get_balance(
@@ -306,24 +324,26 @@ async def get_balance(
         JSON string containing balance information
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
-    
+
     try:
+        environment = "sandbox" if use_sandbox else "production"
         client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
         account_to_use = account_id or db_account_number
-        
+
         balance = client.get_balance(account_to_use)
-        
+
         return json.dumps({
             "status": "success",
             "message": "Balance retrieved successfully",
             "platform": platform,
             "balance": balance
         }, indent=2)
-        
+
     except Exception as e:
         logger.error(f"Failed to get balance: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def view_orders(
@@ -347,31 +367,33 @@ async def view_orders(
         JSON string containing order information
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
-    
+
     try:
+        environment = "sandbox" if use_sandbox else "production"
         client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
         account_to_use = account_id or db_account_number
-        
+
         orders = client.get_orders(account_id=account_to_use, include_filled=include_filled)
-        
+
         if not orders:
             return json.dumps({
                 "status": "success",
                 "message": "No orders found",
                 "orders": []
             }, indent=2)
-        
+
         return json.dumps({
             "status": "success",
             "message": f"Retrieved {len(orders)} orders",
             "platform": platform,
             "orders": orders
         }, indent=2)
-        
+
     except Exception as e:
         logger.error(f"Failed to get orders: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def cancel_order(
@@ -395,27 +417,29 @@ async def cancel_order(
         JSON string containing cancellation response
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
-    
+
     try:
+        environment = "sandbox" if use_sandbox else "production"
         if not order_id:
             raise TradingPlatformError("Order ID is required")
-        
+
         client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
         account_to_use = account_id or db_account_number
-        
+
         response = client.cancel_order(account_id=account_to_use, order_id=order_id)
-        
+
         return json.dumps({
             "status": "success",
             "message": f"Order {order_id} cancelled successfully",
             "platform": platform,
             "response": response
         }, indent=2)
-        
+
     except Exception as e:
         logger.error(f"Failed to cancel order: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def get_account_history(
@@ -466,6 +490,8 @@ async def get_account_history(
     except Exception as e:
         logger.error(f"Failed to get history: {e}", exc_info=True)
         return json.dumps({"status": "error", "message": str(e)}, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def get_account_status(ctx: Context, platform: str = "tradier", use_sandbox: bool = True) -> str:
@@ -510,6 +536,8 @@ async def get_account_status(ctx: Context, platform: str = "tradier", use_sandbo
             "status": "error",
             "message": str(e)
         }, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def get_account_info(
@@ -556,6 +584,8 @@ async def get_account_info(
             "platform": platform,
             "account_info": {}
         }, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def change_order(
@@ -664,6 +694,8 @@ async def change_order(
             "order_id": order_id,
             "response": {}
         }, indent=2)
+    finally:
+        db.close()
 
 @mcp.tool()
 async def health_check(ctx: Context) -> str:

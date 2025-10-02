@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session
 from database import init_database, get_db
 from oauth_server import router as oauth_router, get_current_user_id, SERVER_URL, MCP_ENDPOINT, verify_access_token
 from trading_server_oauth import mcp as trading_mcp
-from request_context import set_request_context, clear_request_context
 
 # Configure logging
 logging.basicConfig(
@@ -87,40 +86,46 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                 payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
                 user_id = payload["sub"]
                 
-                # Get database session
-                db_gen = get_db()
-                db = next(db_gen)
+                # Create a direct database session for middleware use
+                from database import SessionLocal
+                if SessionLocal is None:
+                    from database import init_session_local
+                    init_session_local()
                 
-                # SECURITY: Verify user still exists in database
-                from database import User
-                user = db.query(User).filter(User.user_id == user_id).first()
-                if not user:
-                    logger.warning(f"❌ Token references non-existent user: {user_id}")
-                    db.close()
-                    return JSONResponse(
-                        status_code=401,
-                        content={
-                            "error": "invalid_token", 
-                            "message": "User account no longer exists. Please authenticate again."
-                        },
-                        headers={
-                            "WWW-Authenticate": f'Bearer realm="MCP Trading", error="invalid_token"'
-                        }
-                    )
-                
-                # Store in context-local storage for tools to access
-                set_request_context(user_id, db)
-                
-                logger.info(f"✅ Token validated for user: {user_id}")
-                
+                db = SessionLocal()
                 try:
+                    # SECURITY: Verify user still exists in database
+                    from database import User
+                    user = db.query(User).filter(User.user_id == user_id).first()
+                    if not user:
+                        logger.warning(f"❌ Token references non-existent user: {user_id}")
+                        return JSONResponse(
+                            status_code=401,
+                            content={
+                                "error": "invalid_token", 
+                                "message": "User account no longer exists. Please authenticate again."
+                            },
+                            headers={
+                                "WWW-Authenticate": f'Bearer realm="MCP Trading", error="invalid_token"'
+                            }
+                        )
+                    
+                    # Store user_id in context-local storage for tools to access
+                    # Tools will create their own database sessions
+                    from request_context import set_user_id
+                    set_user_id(user_id)
+
+                    logger.info(f"✅ Token validated for user: {user_id}")
+
                     # Continue to endpoint with context set
                     response = await call_next(request)
                     return response
+
                 finally:
-                    # Always clean up
+                    # Clean up context and close database session
+                    from request_context import clear_user_id
+                    clear_user_id()
                     db.close()
-                    clear_request_context()
                 
             except Exception as e:
                 logger.warning(f"❌ Token validation failed: {e}")
@@ -238,16 +243,16 @@ mcp_app = trading_mcp.streamable_http_app()
 logger.info("MCP app created (OAuth validation handled by MCPAuthMiddleware)")
 
 @app.get("/mcp/health")
-async def mcp_health(user_id: str = Depends(get_current_user_id)):
+async def mcp_health():
     """
     Health check endpoint for MCP server.
     
-    Requires valid OAuth token. Returns user context.
+    This endpoint is excluded from OAuth validation in the middleware
+    to allow basic health checks without authentication.
     """
     return JSONResponse({
         "status": "ok",
         "message": "MCP Trading Server is running",
-        "user_id": user_id,
         "server_url": SERVER_URL
     })
 
