@@ -33,16 +33,19 @@ class User(Base):
 class UserCredential(Base):
     """Encrypted trading platform credentials per user."""
     __tablename__ = "user_credentials"
-    
+
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), primary_key=True)
-    platform = Column(String, primary_key=True)  # 'tradier'
+    platform = Column(String, primary_key=True)  # 'tradier', 'schwab'
     environment = Column(String, primary_key=True)  # 'sandbox' or 'production'
     encrypted_access_token = Column(LargeBinary, nullable=False)
     encrypted_account_number = Column(LargeBinary, nullable=False)
+    encrypted_refresh_token = Column(LargeBinary, nullable=True)  # For OAuth platforms like Schwab
+    encrypted_account_hash = Column(LargeBinary, nullable=True)  # For platforms using hashes instead of account numbers
+    token_expires_at = Column(DateTime, nullable=True)  # For OAuth token expiration tracking
     encryption_key_id = Column(String, nullable=False, default="default")  # For key rotation
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     user = relationship("User", back_populates="credentials")
 

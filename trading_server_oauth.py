@@ -15,6 +15,8 @@ from mcp.server.fastmcp import FastMCP, Context
 from sqlalchemy.orm import Session
 
 from tradier_client import TradierClient
+from schwab_client import SchwabClient
+from trading_platform_interface import TradingPlatformInterface
 from auth_utils import get_user_trading_credentials
 from request_context import get_user_id
 
@@ -36,7 +38,7 @@ mcp.settings.streamable_http_path = "/"
 logger.info("MCP Trading Server initialized")
 
 # Supported platforms
-SUPPORTED_PLATFORMS = ["tradier"]
+SUPPORTED_PLATFORMS = ["tradier", "schwab"]
 
 class TradingPlatformError(Exception):
     """Custom exception for trading platform errors."""
@@ -77,39 +79,57 @@ def get_trading_client_for_user(
     platform: str,
     environment: str,
     db: Session
-) -> tuple[Any, str]:
+) -> tuple[TradingPlatformInterface, str]:
     """
     Create trading client with user-specific credentials.
-    
+
     Args:
         user_id: Authenticated user ID from OAuth token
-        platform: Trading platform (e.g., 'tradier')
+        platform: Trading platform (e.g., 'tradier', 'schwab')
         environment: 'sandbox' or 'production'
         db: Database session
-    
+
     Returns:
-        Tuple of (client, account_number)
+        Tuple of (client, account_identifier)
+        - For Tradier: account_identifier is account_number
+        - For Schwab: account_identifier is account_hash
     """
     logger.info(f"Creating client for user {user_id}, platform {platform}, env {environment}")
-    
+
     if platform not in SUPPORTED_PLATFORMS:
         raise TradingPlatformError(f"Unsupported platform: {platform}")
-    
+
     # Fetch and decrypt credentials
     try:
-        access_token, account_number = get_user_trading_credentials(
+        access_token, account_number, refresh_token, account_hash, token_expires_at = get_user_trading_credentials(
             user_id, platform, environment, db
         )
     except ValueError as e:
         raise TradingPlatformError(str(e))
-    
-    # Create client
+
+    # Create client based on platform
     if platform == "tradier":
         use_sandbox = (environment == "sandbox")
         client = TradierClient(access_token=access_token, sandbox=use_sandbox)
         logger.info(f"Created Tradier client for user {user_id}")
         return client, account_number
-    
+
+    elif platform == "schwab":
+        # Schwab requires refresh token and account hash
+        if not refresh_token:
+            raise TradingPlatformError("Schwab platform requires refresh token")
+        if not account_hash:
+            raise TradingPlatformError("Schwab platform requires account hash")
+
+        client = SchwabClient(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            account_hash=account_hash,
+            token_expires_at=token_expires_at
+        )
+        logger.info(f"Created Schwab client for user {user_id}")
+        return client, account_hash
+
     raise TradingPlatformError(f"Platform {platform} not implemented")
 
 # ============================================================================

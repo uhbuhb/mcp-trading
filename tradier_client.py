@@ -6,9 +6,10 @@ Handles all API interactions with the Tradier trading platform.
 import requests
 import json
 from typing import Dict, List, Optional, Any
+from trading_platform_interface import TradingPlatformInterface
 
 
-class TradierClient:
+class TradierClient(TradingPlatformInterface):
     """Client for interacting with the Tradier API."""
     
     def __init__(self, access_token: str, sandbox: bool = True):

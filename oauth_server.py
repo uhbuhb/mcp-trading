@@ -12,7 +12,7 @@ import os
 import logging
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from urllib.parse import urlencode, urlparse
 
@@ -298,7 +298,7 @@ async def setup_credentials(
         # Update existing
         credential.encrypted_access_token = encrypted_token
         credential.encrypted_account_number = encrypted_account
-        credential.updated_at = datetime.utcnow()
+        credential.updated_at = datetime.now(timezone.utc)
         logger.info(f"Updated credentials for user {user.user_id}")
     else:
         # Create new
@@ -581,7 +581,7 @@ async def authorize_login(
         code_challenge_method=code_challenge_method,
         resource_parameter=resource,  # Store resource for token validation
         scope=scope,  # Store approved scope
-        expires_at=datetime.utcnow() + timedelta(minutes=10)  # Short-lived
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)  # Short-lived
     )
     db.add(oauth_code)
     db.commit()
@@ -655,7 +655,9 @@ async def _handle_authorization_code_grant(
         raise HTTPException(400, "Invalid authorization code")
     
     # Check expiration
-    if oauth_code.expires_at < datetime.utcnow():
+    # Convert timezone-naive datetime from DB to UTC for comparison
+    expires_at_utc = oauth_code.expires_at.replace(tzinfo=timezone.utc) if oauth_code.expires_at.tzinfo is None else oauth_code.expires_at
+    if expires_at_utc < datetime.now(timezone.utc):
         logger.warning(f"Expired authorization code: {code}")
         raise HTTPException(400, "Authorization code expired")
     
@@ -710,9 +712,9 @@ async def _handle_authorization_code_grant(
         client_id=client_id,
         resource_parameter=resource,
         scope=oauth_code.scope,  # Store approved scope
-        expires_at=datetime.utcnow() + access_token_expires,
+        expires_at=datetime.now(timezone.utc) + access_token_expires,
         refresh_token_hash=refresh_token_hash,
-        refresh_expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        refresh_expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     )
     db.add(oauth_token)
     db.commit()
@@ -750,7 +752,9 @@ async def _handle_refresh_token_grant(
         raise HTTPException(400, "Invalid refresh token")
     
     # Check expiration
-    if oauth_token.refresh_expires_at < datetime.utcnow():
+    # Convert timezone-naive datetime from DB to UTC for comparison
+    refresh_expires_at_utc = oauth_token.refresh_expires_at.replace(tzinfo=timezone.utc) if oauth_token.refresh_expires_at.tzinfo is None else oauth_token.refresh_expires_at
+    if refresh_expires_at_utc < datetime.now(timezone.utc):
         raise HTTPException(400, "Refresh token expired")
     
     # Validate resource matches
@@ -776,8 +780,8 @@ async def _handle_refresh_token_grant(
     # Update token
     oauth_token.token_hash = hashlib.sha256(access_token.encode()).hexdigest()
     oauth_token.refresh_token_hash = new_refresh_hash
-    oauth_token.expires_at = datetime.utcnow() + access_token_expires
-    oauth_token.refresh_expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    oauth_token.expires_at = datetime.now(timezone.utc) + access_token_expires
+    oauth_token.refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     db.commit()
 
     logger.info(f"Refreshed token for user {oauth_token.user_id}")
@@ -930,10 +934,10 @@ def create_access_token(data: Dict[str, Any], expires_delta: timedelta) -> str:
     Per MCP spec, the token MUST include the resource parameter in the audience claim.
     """
     to_encode = data.copy()
-    expire = datetime.utcnow() + expires_delta
+    expire = datetime.now(timezone.utc) + expires_delta
     to_encode.update({
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
         "iss": SERVER_URL
     })
     
@@ -1029,7 +1033,9 @@ async def get_current_user_id(
         raise HTTPException(401, "Token revoked or invalid")
     
     # Check expiration
-    if oauth_token.expires_at < datetime.utcnow():
+    # Convert timezone-naive datetime from DB to UTC for comparison
+    expires_at_utc = oauth_token.expires_at.replace(tzinfo=timezone.utc) if oauth_token.expires_at.tzinfo is None else oauth_token.expires_at
+    if expires_at_utc < datetime.now(timezone.utc):
         logger.warning(f"Token expired for user {oauth_token.user_id}")
         raise HTTPException(401, "Token expired")
     

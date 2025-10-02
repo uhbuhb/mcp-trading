@@ -11,7 +11,7 @@ Runs every hour to prevent database bloat.
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from database import get_db, OAuthCode, OAuthToken
@@ -34,7 +34,7 @@ async def cleanup_expired_codes():
 
     try:
         # Delete codes expired more than 1 hour ago
-        cutoff_time = datetime.utcnow() - timedelta(hours=1)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
 
         deleted_count = db.query(OAuthCode).filter(
             OAuthCode.expires_at < cutoff_time
@@ -65,7 +65,7 @@ async def cleanup_expired_tokens():
 
     try:
         # Delete tokens expired more than 1 day ago
-        cutoff_time = datetime.utcnow() - timedelta(days=1)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=1)
 
         deleted_count = db.query(OAuthToken).filter(
             OAuthToken.expires_at < cutoff_time,
@@ -97,7 +97,7 @@ async def cleanup_revoked_tokens():
 
     try:
         # Delete revoked tokens older than grace period
-        cutoff_time = datetime.utcnow() - timedelta(days=REVOKED_TOKEN_GRACE_PERIOD_DAYS)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=REVOKED_TOKEN_GRACE_PERIOD_DAYS)
 
         deleted_count = db.query(OAuthToken).filter(
             OAuthToken.revoked == True,
@@ -126,7 +126,7 @@ async def run_cleanup():
     """
     logger.info("🧹 Starting OAuth database cleanup")
 
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     # Run all cleanup tasks
     codes_deleted = await cleanup_expired_codes()
@@ -134,7 +134,7 @@ async def run_cleanup():
     revoked_deleted = await cleanup_revoked_tokens()
 
     total_deleted = codes_deleted + tokens_deleted + revoked_deleted
-    duration = (datetime.utcnow() - start_time).total_seconds()
+    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
 
     if total_deleted > 0:
         logger.info(f"✅ Cleanup complete: {total_deleted} records deleted in {duration:.2f}s")

@@ -32,6 +32,8 @@ A Model Context Protocol (MCP) server that provides trading capabilities for var
 3. **Configure environment variables**
    
    Create a `.env` file in the project root with your API credentials:
+   
+   **For Tradier:**
    ```bash
    # Tradier Sandbox (for testing)
    TRADIER_SANDBOX_ACCESS_TOKEN=your_sandbox_token_here
@@ -42,6 +44,15 @@ A Model Context Protocol (MCP) server that provides trading capabilities for var
    TRADIER_ACCESS_TOKEN=your_production_token_here
    TRADIER_ACCOUNT_NUMBER=your_production_account_here
    TRADIER_ENDPOINT=https://api.tradier.com
+   ```
+   
+   **For Schwab:**
+   ```bash
+   # Schwab API credentials (automatic OAuth authentication)
+   SCHWAB_APP_KEY=your_app_key_here
+   SCHWAB_APP_SECRET=your_app_secret_here
+   SCHWAB_ACCOUNT_HASH=your_account_hash_here
+   SCHWAB_CALLBACK_URL=https://127.0.0.1:8080  # optional, defaults to this
    ```
 
 ### Running Locally
@@ -102,14 +113,16 @@ The server exposes comprehensive trading capabilities including:
 - Order management and history
 - Market calendars and time/sales data
 
-See the tool definitions in `trading.py` for complete documentation.
+See the tool definitions in `trading_server_oauth.py` for complete documentation.
 
 ## Project Structure
 
 ```
 mcp-trading/
-├── trading.py              # Main MCP server
+├── trading_server_oauth.py # Main MCP server with OAuth
+├── schwab_client.py        # Schwab API client (easy_client)
 ├── tradier_client.py       # Tradier API client
+├── cli.py                  # Command-line interface
 ├── pyproject.toml          # Project configuration
 └── .env                    # Environment variables (create this)
 ```
