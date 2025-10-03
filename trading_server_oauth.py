@@ -812,6 +812,211 @@ async def list_platforms(ctx: Context) -> str:
         "default_platform": "tradier"
     }, indent=2)
 
+@mcp.tool()
+async def revoke_current_token(ctx: Context) -> str:
+    """
+    Revoke the current session token.
+    
+    This will immediately invalidate the token used for this request,
+    effectively logging out the current session.
+    
+    Args:
+        ctx: FastMCP Context (automatically injected)
+    
+    Returns:
+        JSON string containing revocation status
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    
+    try:
+        # Get the current token from the request context
+        from request_context import get_current_token
+        current_token = get_current_token()
+        
+        if not current_token:
+            return json.dumps({
+                "status": "error",
+                "message": "Current token not found in request context"
+            }, indent=2)
+        
+        # Hash the token to find it in the database
+        import hashlib
+        token_hash = hashlib.sha256(current_token.encode()).hexdigest()
+        
+        # Find and revoke the token
+        from database import OAuthToken
+        oauth_token = db.query(OAuthToken).filter(
+            OAuthToken.token_hash == token_hash,
+            OAuthToken.revoked == False
+        ).first()
+        
+        if not oauth_token:
+            return json.dumps({
+                "status": "error",
+                "message": "Current token not found in database"
+            }, indent=2)
+        
+        # Mark as revoked
+        oauth_token.revoked = True
+        db.commit()
+        
+        logger.info(f"Current token revoked for user {user_id}")
+        
+        return json.dumps({
+            "status": "success",
+            "message": "Current session token revoked successfully",
+            "user_id": user_id,
+            "revoked_at": oauth_token.updated_at.isoformat() if oauth_token.updated_at else None
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Failed to revoke current token: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to revoke current token: {str(e)}"
+        }, indent=2)
+    finally:
+        db.close()
+
+@mcp.tool()
+async def revoke_all_tokens(ctx: Context, platform: Optional[str] = None) -> str:
+    """
+    Revoke all active tokens for the authenticated user.
+    
+    Args:
+        ctx: FastMCP Context (automatically injected)
+        platform: Optional platform filter (e.g., 'tradier', 'schwab'). 
+                  If not specified, revokes all tokens for all platforms.
+    
+    Returns:
+        JSON string containing revocation status
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    
+    try:
+        from database import OAuthToken
+        
+        # Build query for active tokens
+        query = db.query(OAuthToken).filter(
+            OAuthToken.user_id == user_id,
+            OAuthToken.revoked == False
+        )
+        
+        # Add platform filter if specified
+        if platform:
+            query = query.filter(OAuthToken.client_id == platform)
+        
+        # Get all active tokens
+        active_tokens = query.all()
+        
+        if not active_tokens:
+            return json.dumps({
+                "status": "success",
+                "message": "No active tokens found to revoke",
+                "user_id": user_id,
+                "platform_filter": platform,
+                "revoked_count": 0
+            }, indent=2)
+        
+        # Revoke all tokens
+        revoked_count = 0
+        for token in active_tokens:
+            token.revoked = True
+            revoked_count += 1
+        
+        db.commit()
+        
+        logger.info(f"Revoked {revoked_count} tokens for user {user_id} (platform: {platform or 'all'})")
+        
+        return json.dumps({
+            "status": "success",
+            "message": f"Successfully revoked {revoked_count} active tokens",
+            "user_id": user_id,
+            "platform_filter": platform,
+            "revoked_count": revoked_count
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Failed to revoke all tokens: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to revoke all tokens: {str(e)}"
+        }, indent=2)
+    finally:
+        db.close()
+
+@mcp.tool()
+async def list_active_sessions(ctx: Context) -> str:
+    """
+    List all active sessions (non-revoked tokens) for the authenticated user.
+    
+    Args:
+        ctx: FastMCP Context (automatically injected)
+    
+    Returns:
+        JSON string containing active sessions information
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    
+    try:
+        from database import OAuthToken
+        from datetime import datetime, timezone
+        
+        # Get all active tokens for the user
+        active_tokens = db.query(OAuthToken).filter(
+            OAuthToken.user_id == user_id,
+            OAuthToken.revoked == False
+        ).all()
+        
+        if not active_tokens:
+            return json.dumps({
+                "status": "success",
+                "message": "No active sessions found",
+                "user_id": user_id,
+                "active_sessions": []
+            }, indent=2)
+        
+        # Format session information
+        sessions = []
+        current_time = datetime.now(timezone.utc)
+        
+        for token in active_tokens:
+            # Check if token is expired
+            expires_at_utc = token.expires_at.replace(tzinfo=timezone.utc) if token.expires_at.tzinfo is None else token.expires_at
+            is_expired = expires_at_utc < current_time
+            
+            session_info = {
+                "client_id": token.client_id,
+                "created_at": token.created_at.isoformat(),
+                "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+                "is_expired": is_expired,
+                "scope": token.scope,
+                "token_id": token.id  # Internal ID for reference
+            }
+            sessions.append(session_info)
+        
+        # Separate active and expired sessions
+        active_sessions = [s for s in sessions if not s["is_expired"]]
+        expired_sessions = [s for s in sessions if s["is_expired"]]
+        
+        return json.dumps({
+            "status": "success",
+            "message": f"Found {len(active_sessions)} active sessions and {len(expired_sessions)} expired sessions",
+            "user_id": user_id,
+            "active_sessions": active_sessions,
+            "expired_sessions": expired_sessions,
+            "total_sessions": len(sessions)
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Failed to list active sessions: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to list active sessions: {str(e)}"
+        }, indent=2)
+    finally:
+        db.close()
+
 # Export the FastMCP server instance
 # This will be imported by app.py and mounted at /mcp
 __all__ = ["mcp"]

@@ -110,10 +110,10 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                             }
                         )
                     
-                    # Store user_id in context-local storage for tools to access
+                    # Store user_id and token in context-local storage for tools to access
                     # Tools will create their own database sessions
                     from request_context import set_user_id
-                    set_user_id(user_id)
+                    set_user_id(user_id, token)
 
                     logger.info(f"✅ Token validated for user: {user_id}")
 

@@ -113,12 +113,14 @@ async def setup_form(request: Request):
     # Check if user is authenticated via OAuth
     auth_header = request.headers.get("Authorization")
     user_email = None
+    is_authenticated = False
 
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
             payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
             user_id = payload["sub"]
+            is_authenticated = True
             # Get user email from database
             from database import get_db
             db = next(get_db())
@@ -132,6 +134,9 @@ async def setup_form(request: Request):
             pass  # Not authenticated, show full form
 
     email_field = f'<input type="email" id="email" name="email" value="{user_email}" required readonly>' if user_email else '<input type="email" id="email" name="email" required>'
+    
+    # Show session management if authenticated
+    session_management_style = 'style="display: block;"' if is_authenticated else 'class="hidden"'
     password_section = '' if user_email else '''
             <div class="form-group">
                 <label for="password">Password:</label>
@@ -218,6 +223,24 @@ async def setup_form(request: Request):
             </div>
         </form>
 
+        <!-- Session Management Section (only shown if authenticated) -->
+        <div id="session-management" {session_management_style}>
+            <h2>🔒 Session Management</h2>
+            <div class="warning">
+                <strong>ℹ️ Session Security:</strong> Manage your active sessions and revoke access when needed.
+            </div>
+            
+            <div class="form-group">
+                <button type="button" onclick="loadSessions()">🔄 Refresh Sessions</button>
+                <button type="button" onclick="revokeCurrentSession()" style="background: #dc3545;">🚪 Revoke Current Session</button>
+                <button type="button" onclick="revokeAllSessions()" style="background: #dc3545;">🚫 Revoke All Sessions</button>
+            </div>
+            
+            <div id="sessions-list">
+                <p>Click "Refresh Sessions" to view your active sessions.</p>
+            </div>
+        </div>
+
         <script>
             function togglePlatformFields() {{
                 const platform = document.getElementById('platform').value;
@@ -263,6 +286,144 @@ async def setup_form(request: Request):
 
                 window.location.href = `/setup/schwab/initiate?${{params.toString()}}`;
             }}
+
+            // Session Management Functions
+            function loadSessions() {{
+                // Get auth header from the current request (passed from server)
+                const authHeader = '{auth_header if is_authenticated else ""}';
+                if (!authHeader) {{
+                    alert('No authentication token found. Please log in first.');
+                    return;
+                }}
+
+                fetch('/setup/sessions', {{
+                    method: 'GET',
+                    headers: {{
+                        'Authorization': authHeader,
+                        'Content-Type': 'application/json'
+                    }}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.status === 'success') {{
+                        displaySessions(data);
+                    }} else {{
+                        alert('Failed to load sessions: ' + data.error);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error loading sessions:', error);
+                    alert('Error loading sessions: ' + error.message);
+                }});
+            }}
+
+            function displaySessions(data) {{
+                const sessionsList = document.getElementById('sessions-list');
+                const sessions = data.sessions;
+                const active_count = data.active_count;
+                const expired_count = data.expired_count;
+                
+                let html = `<h3>Active Sessions (${{active_count}} active, ${{expired_count}} expired)</h3>`;
+                
+                if (sessions.length === 0) {{
+                    html += '<p>No sessions found.</p>';
+                }} else {{
+                    html += '<div style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin: 10px 0;">';
+                    
+                    sessions.forEach(session => {{
+                        const status = session.is_expired ? '❌ Expired' : '✅ Active';
+                        const createdDate = new Date(session.created_at).toLocaleString();
+                        const expiresDate = session.expires_at ? new Date(session.expires_at).toLocaleString() : 'Never';
+                        
+                        html += `
+                            <div style="border-bottom: 1px solid #eee; padding: 8px 0;">
+                                <strong>${{status}}</strong> - ${{session.client_id}}<br>
+                                <small>Created: ${{createdDate}} | Expires: ${{expiresDate}}</small>
+                            </div>
+                        `;
+                    }});
+                    
+                    html += '</div>';
+                }}
+                
+                sessionsList.innerHTML = html;
+            }}
+
+            function revokeCurrentSession() {{
+                if (!confirm('Are you sure you want to revoke your current session? You will be logged out immediately.')) {{
+                    return;
+                }}
+
+                const authHeader = '{auth_header if is_authenticated else ""}';
+                if (!authHeader) {{
+                    alert('No authentication token found.');
+                    return;
+                }}
+
+                fetch('/setup/revoke-current', {{
+                    method: 'POST',
+                    headers: {{
+                        'Authorization': authHeader,
+                        'Content-Type': 'application/json'
+                    }}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.status === 'success') {{
+                        alert('Current session revoked successfully. You will be redirected to login.');
+                        localStorage.removeItem('auth_token');
+                        window.location.href = '/setup';
+                    }} else {{
+                        alert('Failed to revoke session: ' + data.error);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error revoking session:', error);
+                    alert('Error revoking session: ' + error.message);
+                }});
+            }}
+
+            function revokeAllSessions() {{
+                if (!confirm('Are you sure you want to revoke ALL your sessions? You will be logged out from all devices immediately.')) {{
+                    return;
+                }}
+
+                const authHeader = '{auth_header if is_authenticated else ""}';
+                if (!authHeader) {{
+                    alert('No authentication token found.');
+                    return;
+                }}
+
+                fetch('/setup/revoke-all', {{
+                    method: 'POST',
+                    headers: {{
+                        'Authorization': authHeader,
+                        'Content-Type': 'application/json'
+                    }}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.status === 'success') {{
+                        alert(`Successfully revoked ${{data.revoked_count}} sessions. You will be redirected to login.`);
+                        localStorage.removeItem('auth_token');
+                        window.location.href = '/setup';
+                    }} else {{
+                        alert('Failed to revoke sessions: ' + data.error);
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error revoking sessions:', error);
+                    alert('Error revoking sessions: ' + error.message);
+                }});
+            }}
+
+            // Show session management if user is authenticated
+            document.addEventListener('DOMContentLoaded', function() {{
+                const authHeader = '{auth_header if is_authenticated else ""}';
+                if (authHeader) {{
+                    document.getElementById('session-management').classList.remove('hidden');
+                }}
+            }});
         </script>
     </body>
     </html>
@@ -407,6 +568,156 @@ async def setup_credentials(
     </body>
     </html>
     """)
+
+# ============================================================================
+# SESSION MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@router.get("/setup/sessions")
+async def list_user_sessions(request: Request, db: Session = Depends(get_db)):
+    """
+    List active sessions for the authenticated user.
+    """
+    # Check if user is authenticated
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    token = auth_header.split(" ")[1]
+    try:
+        payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
+        user_id = payload["sub"]
+        
+        # Get all active tokens for the user
+        from database import OAuthToken
+        from datetime import datetime, timezone
+        
+        active_tokens = db.query(OAuthToken).filter(
+            OAuthToken.user_id == user_id,
+            OAuthToken.revoked == False
+        ).all()
+        
+        sessions = []
+        current_time = datetime.now(timezone.utc)
+        
+        for token_obj in active_tokens:
+            expires_at_utc = token_obj.expires_at.replace(tzinfo=timezone.utc) if token_obj.expires_at.tzinfo is None else token_obj.expires_at
+            is_expired = expires_at_utc < current_time
+            
+            sessions.append({
+                "client_id": token_obj.client_id,
+                "created_at": token_obj.created_at.isoformat(),
+                "expires_at": token_obj.expires_at.isoformat() if token_obj.expires_at else None,
+                "is_expired": is_expired,
+                "scope": token_obj.scope,
+                "token_id": token_obj.id
+            })
+        
+        return JSONResponse({
+            "status": "success",
+            "user_id": user_id,
+            "sessions": sessions,
+            "active_count": len([s for s in sessions if not s["is_expired"]]),
+            "expired_count": len([s for s in sessions if s["is_expired"]])
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to list sessions: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@router.post("/setup/revoke-current")
+async def revoke_current_session(request: Request, db: Session = Depends(get_db)):
+    """
+    Revoke the current session token.
+    """
+    # Check if user is authenticated
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    token = auth_header.split(" ")[1]
+    try:
+        payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
+        user_id = payload["sub"]
+        
+        # Hash the token to find it in the database
+        import hashlib
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        
+        # Find and revoke the token
+        from database import OAuthToken
+        oauth_token = db.query(OAuthToken).filter(
+            OAuthToken.token_hash == token_hash,
+            OAuthToken.revoked == False
+        ).first()
+        
+        if not oauth_token:
+            return JSONResponse({"error": "Current token not found"}, status_code=404)
+        
+        # Mark as revoked
+        oauth_token.revoked = True
+        db.commit()
+        
+        logger.info(f"Current session revoked for user {user_id}")
+        
+        return JSONResponse({
+            "status": "success",
+            "message": "Current session revoked successfully",
+            "user_id": user_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to revoke current session: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@router.post("/setup/revoke-all")
+async def revoke_all_sessions(request: Request, db: Session = Depends(get_db)):
+    """
+    Revoke all active sessions for the authenticated user.
+    """
+    # Check if user is authenticated
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    token = auth_header.split(" ")[1]
+    try:
+        payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
+        user_id = payload["sub"]
+        
+        # Get all active tokens for the user
+        from database import OAuthToken
+        active_tokens = db.query(OAuthToken).filter(
+            OAuthToken.user_id == user_id,
+            OAuthToken.revoked == False
+        ).all()
+        
+        if not active_tokens:
+            return JSONResponse({
+                "status": "success",
+                "message": "No active sessions found",
+                "revoked_count": 0
+            })
+        
+        # Revoke all tokens
+        revoked_count = 0
+        for token_obj in active_tokens:
+            token_obj.revoked = True
+            revoked_count += 1
+        
+        db.commit()
+        
+        logger.info(f"Revoked {revoked_count} sessions for user {user_id}")
+        
+        return JSONResponse({
+            "status": "success",
+            "message": f"Successfully revoked {revoked_count} sessions",
+            "revoked_count": revoked_count
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to revoke all sessions: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # ============================================================================
 # SCHWAB OAUTH SETUP FLOW

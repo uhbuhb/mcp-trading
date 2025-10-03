@@ -10,18 +10,22 @@ from typing import Optional
 # Context variables for request-scoped data
 _user_id: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
 _authenticated: ContextVar[bool] = ContextVar("authenticated", default=False)
+_current_token: ContextVar[Optional[str]] = ContextVar("current_token", default=None)
 
-def set_user_id(user_id: str):
+def set_user_id(user_id: str, token: Optional[str] = None):
     """
-    Store user_id for the current request.
+    Store user_id and token for the current request.
 
     Called by middleware after OAuth validation.
 
     Args:
         user_id: Authenticated user ID
+        token: Optional access token for revocation purposes
     """
     _user_id.set(user_id)
     _authenticated.set(True)
+    if token:
+        _current_token.set(token)
 
 def get_user_id() -> str:
     """
@@ -46,6 +50,15 @@ def get_user_id() -> str:
 
     return user_id
 
+def get_current_token() -> Optional[str]:
+    """
+    Retrieve current token for the request.
+    
+    Returns:
+        Current access token or None if not available
+    """
+    return _current_token.get()
+
 def clear_user_id():
     """
     Clear user context.
@@ -54,7 +67,8 @@ def clear_user_id():
     """
     _user_id.set(None)
     _authenticated.set(False)
+    _current_token.set(None)
 
 # Expose context vars for direct access if needed (backward compatibility)
-__all__ = ['set_user_id', 'get_user_id', 'clear_user_id', '_user_id', '_authenticated']
+__all__ = ['set_user_id', 'get_user_id', 'get_current_token', 'clear_user_id', '_user_id', '_authenticated', '_current_token']
 
