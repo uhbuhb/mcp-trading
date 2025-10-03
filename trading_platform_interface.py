@@ -104,7 +104,8 @@ class TradingPlatformInterface(ABC):
     
     @abstractmethod
     def change_order(self, account_id: str, order_id: str, order_type: Optional[str] = None,
-                    price: Optional[float] = None, duration: Optional[str] = None) -> Dict[str, Any]:
+                    price: Optional[float] = None, stop: Optional[float] = None,
+                    duration: Optional[str] = None, quantity: Optional[float] = None) -> Dict[str, Any]:
         """
         Modify an existing order.
         
@@ -112,8 +113,10 @@ class TradingPlatformInterface(ABC):
             account_id: Account ID
             order_id: Order ID to modify
             order_type: New order type (optional)
-            price: New price (optional)
-            duration: New duration (optional)
+            price: New limit price (required for limit orders)
+            stop: New stop price (required for stop orders)
+            duration: New order duration (optional)
+            quantity: New quantity (optional)
             
         Returns:
             Modification response dictionary

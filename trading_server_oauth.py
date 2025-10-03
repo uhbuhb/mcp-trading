@@ -38,7 +38,7 @@ mcp.settings.streamable_http_path = "/"
 logger.info("MCP Trading Server initialized")
 
 # Supported platforms
-SUPPORTED_PLATFORMS = ["tradier", "schwab"]
+SUPPORTED_PLATFORMS = ["tradier", "tradier_paper", "schwab"]
 
 class TradingPlatformError(Exception):
     """Custom exception for trading platform errors."""
@@ -74,10 +74,16 @@ def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
     return user_id, db
 
 
+# Platform to base URL mapping
+PLATFORM_BASE_URLS = {
+    "tradier": "https://api.tradier.com",
+    "tradier_paper": "https://sandbox.tradier.com",
+    "schwab": None  # Schwab handles its own base URL
+}
+
 def get_trading_client_for_user(
     user_id: str,
     platform: str,
-    environment: str,
     db: Session
 ) -> tuple[TradingPlatformInterface, str]:
     """
@@ -85,8 +91,7 @@ def get_trading_client_for_user(
 
     Args:
         user_id: Authenticated user ID from OAuth token
-        platform: Trading platform (e.g., 'tradier', 'schwab')
-        environment: 'sandbox' or 'production'
+        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
         db: Database session
 
     Returns:
@@ -94,7 +99,7 @@ def get_trading_client_for_user(
         - For Tradier: account_identifier is account_number
         - For Schwab: account_identifier is account_hash
     """
-    logger.info(f"Creating client for user {user_id}, platform {platform}, env {environment}")
+    logger.info(f"Creating client for user {user_id}, platform {platform}")
 
     if platform not in SUPPORTED_PLATFORMS:
         raise TradingPlatformError(f"Unsupported platform: {platform}")
@@ -102,16 +107,16 @@ def get_trading_client_for_user(
     # Fetch and decrypt credentials
     try:
         access_token, account_number, refresh_token, account_hash, token_expires_at = get_user_trading_credentials(
-            user_id, platform, environment, db
+            user_id, platform, db
         )
     except ValueError as e:
         raise TradingPlatformError(str(e))
 
     # Create client based on platform
-    if platform == "tradier":
-        use_sandbox = (environment == "sandbox")
-        client = TradierClient(access_token=access_token, sandbox=use_sandbox)
-        logger.info(f"Created Tradier client for user {user_id}")
+    if platform in ["tradier", "tradier_paper"]:
+        base_url = PLATFORM_BASE_URLS[platform]
+        client = TradierClient(access_token=access_token, base_url=base_url)
+        logger.info(f"Created Tradier client for user {user_id} ({platform})")
         return client, account_number
 
     elif platform == "schwab":
@@ -140,8 +145,7 @@ def get_trading_client_for_user(
 async def get_positions(
     ctx: Context,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
-    use_sandbox: bool = True
+    platform: str = "tradier"
 ) -> str:
     """
     Get current trading positions from trading account.
@@ -150,7 +154,6 @@ async def get_positions(
         ctx: FastMCP Context (automatically injected, contains user_id and db)
         account_id: Optional account ID override
         platform: Trading platform to use (default: 'tradier')
-        use_sandbox: Whether to use sandbox environment (default: True)
     
     Returns:
         JSON string containing position information
@@ -159,11 +162,10 @@ async def get_positions(
     user_id, db = get_user_context_from_ctx(ctx)
     
     try:
-        environment = "sandbox" if use_sandbox else "production"
-        logger.info(f"get_positions - user: {user_id}, platform: {platform}, env: {environment}")
+        logger.info(f"get_positions - user: {user_id}, platform: {platform}")
         
         # Get user's trading client
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
         
         # Fetch positions
@@ -195,7 +197,6 @@ async def get_positions(
             "status": "success",
             "message": f"Retrieved {len(formatted_positions)} positions",
             "platform": platform,
-            "environment": environment,
             "positions": formatted_positions
         }, indent=2)
         
@@ -212,8 +213,7 @@ async def get_positions(
 async def get_quote(
     ctx: Context,
     symbol: str,
-    platform: str = "tradier",
-    use_sandbox: bool = True
+    platform: str = "tradier"
 ) -> str:
     """
     Get quote information for a stock symbol.
@@ -222,7 +222,6 @@ async def get_quote(
         ctx: FastMCP Context (automatically injected)
         symbol: Stock symbol (e.g., 'AAPL', 'MSFT')
         platform: Trading platform to use (default: 'tradier')
-        use_sandbox: Whether to use sandbox environment (default: True)
     
     Returns:
         JSON string containing quote information
@@ -230,10 +229,9 @@ async def get_quote(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        environment = "sandbox" if use_sandbox else "production"
         logger.info(f"get_quote - symbol: {symbol}, user: {user_id}")
 
-        client, _ = get_trading_client_for_user(user_id, platform, environment, db)
+        client, _ = get_trading_client_for_user(user_id, platform, db)
         quote = client.get_quote(symbol)
 
         return json.dumps({
@@ -260,8 +258,7 @@ async def place_multileg_order(
     session: str = "normal",
     duration: str = "day",
     preview: bool = True,
-    account_id: Optional[str] = None,
-    use_sandbox: bool = True,
+    account_id: Optional[str] = None
     
 ) -> str:
     """
@@ -278,8 +275,7 @@ async def place_multileg_order(
               Example: "V251017C00340000" (V call, Oct 17 2025, $340 strike)
               Note: Option symbols are validated and converted automatically for each platform
         account_id: Optional account ID override
-        platform: Trading platform (currently only 'tradier' and 'schwab' are supported)
-        use_sandbox: Use sandbox environment (default: True but only relevant for tradier platform)
+        platform: Trading platform (currently 'tradier', 'tradier_paper', and 'schwab' are supported)
         order_type: Order type ('market' or 'limit')
         duration: Order duration ('day', 'gtc')
         preview: Preview to check if the order would be accepted. This should always be done before placing the order.  (default: True)
@@ -296,12 +292,11 @@ async def place_multileg_order(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        environment = "sandbox" if use_sandbox else "production"
         logger.info(f"=== MCP TOOL CALLED ===")
         logger.info(f"place_multileg_order - user: {user_id}, symbol: {symbol}, preview: {preview}")
         logger.info(f"price parameter: {price} (type: {type(price)})")
         logger.info(f"order_type: {order_type}, duration: {duration}")
-        logger.info(f"platform: {platform}, use_sandbox: {use_sandbox}")
+        logger.info(f"platform: {platform}")
         logger.info(f"legs parameter: {legs} (type: {type(legs)})")
 
         # Validate
@@ -314,7 +309,7 @@ async def place_multileg_order(
             raise TradingPlatformError("Legs must be a non-empty array")
 
         # Get client
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         # Convert price from string to float if provided
@@ -361,7 +356,6 @@ async def place_multileg_order(
             "status": "success",
             "message": f"Order {'previewed' if preview else 'placed'} successfully",
             "platform": platform,
-            "environment": environment,
             "response": response
         }, indent=2)
 
@@ -378,8 +372,7 @@ async def place_multileg_order(
 async def get_balance(
     ctx: Context,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
-    use_sandbox: bool = True
+    platform: str = "tradier"
 ) -> str:
     """
     Get account balance information.
@@ -388,7 +381,6 @@ async def get_balance(
         ctx: FastMCP Context (automatically injected)
         account_id: Optional account ID override
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
     
     Returns:
         JSON string containing balance information
@@ -396,8 +388,7 @@ async def get_balance(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        environment = "sandbox" if use_sandbox else "production"
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         balance = client.get_balance(account_to_use)
@@ -420,7 +411,6 @@ async def view_orders(
     ctx: Context,
     account_id: Optional[str] = None,
     platform: str = "tradier",
-    use_sandbox: bool = True,
     include_filled: bool = True
 ) -> str:
     """
@@ -430,7 +420,6 @@ async def view_orders(
         ctx: FastMCP Context (automatically injected)
         account_id: Optional account ID override
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
         include_filled: Include filled orders (default: True)
     
     Returns:
@@ -439,8 +428,7 @@ async def view_orders(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        environment = "sandbox" if use_sandbox else "production"
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         orders = client.get_orders(account_id=account_to_use, include_filled=include_filled)
@@ -470,8 +458,7 @@ async def cancel_order(
     ctx: Context,
     order_id: str,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
-    use_sandbox: bool = True
+    platform: str = "tradier"
 ) -> str:
     """
     Cancel an existing order.
@@ -481,7 +468,6 @@ async def cancel_order(
         order_id: Order ID to cancel
         account_id: Optional account ID override
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
     
     Returns:
         JSON string containing cancellation response
@@ -489,11 +475,10 @@ async def cancel_order(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        environment = "sandbox" if use_sandbox else "production"
         if not order_id:
             raise TradingPlatformError("Order ID is required")
 
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         response = client.cancel_order(account_id=account_to_use, order_id=order_id)
@@ -516,7 +501,6 @@ async def get_account_history(
     ctx: Context,
     account_id: Optional[str] = None,
     platform: str = "tradier",
-    use_sandbox: bool = True,
     limit: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
@@ -528,7 +512,6 @@ async def get_account_history(
         ctx: FastMCP Context (automatically injected)
         account_id: Optional account ID override
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
         limit: Number of records to return
         start_date: Start date (YYYY-MM-DD format)
         end_date: End date (YYYY-MM-DD format)
@@ -537,10 +520,9 @@ async def get_account_history(
         JSON string containing history information
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
     
     try:
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
         
         history = client.get_account_history(
@@ -564,27 +546,25 @@ async def get_account_history(
         db.close()
 
 @mcp.tool()
-async def get_account_status(ctx: Context, platform: str = "tradier", use_sandbox: bool = True) -> str:
+async def get_account_status(ctx: Context, platform: str = "tradier") -> str:
     """
     Get the current account configuration status for the authenticated user.
 
     Args:
         ctx: FastMCP Context (automatically injected)
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
 
     Returns:
         JSON string containing account status information
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
 
-    logger.info(f"get_account_status - user: {user_id}, platform: {platform}, env: {environment}")
+    logger.info(f"get_account_status - user: {user_id}, platform: {platform}")
 
     try:
         # Try to get user's trading credentials
         try:
-            _, account_number = get_user_trading_credentials(user_id, platform, environment, db)
+            _, account_number = get_user_trading_credentials(user_id, platform, db)
             credentials_configured = True
         except ValueError:
             credentials_configured = False
@@ -592,10 +572,9 @@ async def get_account_status(ctx: Context, platform: str = "tradier", use_sandbo
 
         return json.dumps({
             "status": "success",
-            "message": f"Account status retrieved for {platform} {environment}",
+            "message": f"Account status retrieved for {platform}",
             "user_id": user_id,
             "platform": platform,
-            "environment": environment,
             "credentials_configured": credentials_configured,
             "account_number": account_number if credentials_configured else "NOT_SET"
         }, indent=2)
@@ -613,8 +592,7 @@ async def get_account_status(ctx: Context, platform: str = "tradier", use_sandbo
 async def get_account_info(
     ctx: Context,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
-    use_sandbox: bool = True
+    platform: str = "tradier"
 ) -> str:
     """
     Get account information from trading platform.
@@ -623,18 +601,16 @@ async def get_account_info(
         ctx: FastMCP Context (automatically injected)
         account_id: Optional account ID override
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
 
     Returns:
         JSON string containing account information
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
 
     logger.info(f"get_account_info - user: {user_id}, platform: {platform}")
 
     try:
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         account_info = client.get_account_info(account_to_use)
@@ -661,14 +637,13 @@ async def get_account_info(
 async def change_order(
     ctx: Context,
     order_id: str,
+    platform: str,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
-    use_sandbox: bool = True,
     order_type: Optional[str] = None,
-    price: Optional[float] = None,
-    stop: Optional[float] = None,
+    price: Optional[str] = None,
+    stop: Optional[str] = None,
     duration: Optional[str] = None,
-    quantity: Optional[float] = None
+    quantity: Optional[str] = None
 ) -> str:
     """
     Change/modify an existing order.
@@ -676,9 +651,8 @@ async def change_order(
     Args:
         ctx: FastMCP Context (automatically injected)
         order_id: Order ID to change
-        account_id: Optional account ID override
         platform: Trading platform (default: 'tradier')
-        use_sandbox: Use sandbox environment (default: True)
+        account_id: Optional account ID override
         order_type: New order type ('market', 'limit', 'stop', 'stop_limit')
         price: New limit price (required for limit orders)
         stop: New stop price (required for stop orders)
@@ -689,7 +663,6 @@ async def change_order(
         JSON string containing change order response
     """
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
 
     logger.info(f"change_order - user: {user_id}, order_id: {order_id}")
 
@@ -708,7 +681,7 @@ async def change_order(
         if order_type in ['stop', 'stop_limit'] and stop is None:
             raise TradingPlatformError(f"Stop price is required for {order_type} orders")
 
-        client, db_account_number = get_trading_client_for_user(user_id, platform, environment, db)
+        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         # Change the order
@@ -716,10 +689,10 @@ async def change_order(
             account_id=account_to_use,
             order_id=order_id,
             order_type=order_type,
-            price=price,
-            stop=stop,
+            price=float(price) if price is not None else None,
+            stop=float(stop) if stop is not None else None,
             duration=duration,
-            quantity=quantity
+            quantity=float(quantity) if quantity is not None else None
         )
 
         # Build changes summary

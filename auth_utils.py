@@ -17,7 +17,6 @@ logger = logging.getLogger("auth_utils")
 def get_user_trading_credentials(
     user_id: str,
     platform: str,
-    environment: str,
     db: Session
 ) -> Tuple[str, str, Optional[str], Optional[str], Optional[datetime]]:
     """
@@ -31,8 +30,7 @@ def get_user_trading_credentials(
 
     Args:
         user_id: User ID from OAuth token
-        platform: Trading platform (e.g., 'tradier', 'schwab')
-        environment: 'sandbox' or 'production'
+        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
         db: Database session
 
     Returns:
@@ -44,19 +42,18 @@ def get_user_trading_credentials(
     Raises:
         ValueError: If credentials not found or decryption fails
     """
-    logger.info(f"Fetching credentials for user {user_id}, platform {platform}, env {environment}")
+    logger.info(f"Fetching credentials for user {user_id}, platform {platform}")
 
     # Fetch encrypted credentials
     credential = db.query(UserCredential).filter(
         UserCredential.user_id == user_id,
-        UserCredential.platform == platform,
-        UserCredential.environment == environment
+        UserCredential.platform == platform
     ).first()
 
     if not credential:
-        logger.error(f"No credentials found for user {user_id} on {platform} ({environment})")
+        logger.error(f"No credentials found for user {user_id} on {platform}")
         raise ValueError(
-            f"No {platform} credentials configured for {environment}. "
+            f"No {platform} credentials configured. "
             f"Please visit {os.getenv('SERVER_URL', 'http://localhost:8000')}/setup to add your credentials."
         )
 
@@ -89,7 +86,6 @@ def get_user_trading_credentials(
 def store_user_trading_credentials(
     user_id: str,
     platform: str,
-    environment: str,
     access_token: str,
     account_number: str,
     db: Session,
@@ -102,8 +98,7 @@ def store_user_trading_credentials(
 
     Args:
         user_id: User ID
-        platform: Trading platform (e.g., 'tradier', 'schwab')
-        environment: 'sandbox' or 'production'
+        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
         access_token: Plain text access token
         account_number: Plain text account number
         db: Database session
@@ -111,7 +106,7 @@ def store_user_trading_credentials(
         account_hash: Optional account hash (for platforms using hashes)
         token_expires_at: Optional OAuth token expiration datetime
     """
-    logger.info(f"Storing credentials for user {user_id}, platform {platform}, env {environment}")
+    logger.info(f"Storing credentials for user {user_id}, platform {platform}")
 
     # Encrypt credentials
     encryption_service = get_encryption_service()
@@ -131,8 +126,7 @@ def store_user_trading_credentials(
     # Check if credentials already exist
     credential = db.query(UserCredential).filter(
         UserCredential.user_id == user_id,
-        UserCredential.platform == platform,
-        UserCredential.environment == environment
+        UserCredential.platform == platform
     ).first()
 
     if credential:
@@ -149,7 +143,6 @@ def store_user_trading_credentials(
         credential = UserCredential(
             user_id=user_id,
             platform=platform,
-            environment=environment,
             encrypted_access_token=encrypted_token,
             encrypted_account_number=encrypted_account,
             encrypted_refresh_token=encrypted_refresh,

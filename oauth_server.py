@@ -183,16 +183,9 @@ async def setup_form(request: Request):
                 <label for="platform">Platform:</label>
                 <select id="platform" name="platform" required onchange="togglePlatformFields()">
                     <option value="">-- Select Platform --</option>
-                    <option value="tradier">Tradier</option>
+                    <option value="tradier">Tradier (Production)</option>
+                    <option value="tradier_paper">Tradier (Paper Trading)</option>
                     <option value="schwab">Schwab</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label for="environment">Environment:</label>
-                <select id="environment" name="environment" required>
-                    <option value="sandbox">Sandbox (Paper Trading)</option>
-                    <option value="production">Production (Real Money)</option>
                 </select>
             </div>
 
@@ -249,7 +242,7 @@ async def setup_form(request: Request):
                 const accessToken = document.getElementById('access_token');
                 const accountNumber = document.getElementById('account_number');
 
-                if (platform === 'tradier') {{
+                if (platform === 'tradier' || platform === 'tradier_paper') {{
                     tradierFields.classList.remove('hidden');
                     schwabFields.classList.add('hidden');
                     accessToken.required = true;
@@ -270,10 +263,9 @@ async def setup_form(request: Request):
             function initiateSchwabOAuth() {{
                 const email = document.getElementById('email').value;
                 const password = document.getElementById('password')?.value || '';
-                const environment = document.getElementById('environment').value;
 
-                if (!email || !environment) {{
-                    alert('Please fill in email and environment before connecting to Schwab');
+                if (!email) {{
+                    alert('Please fill in email before connecting to Schwab');
                     return;
                 }}
 
@@ -281,7 +273,7 @@ async def setup_form(request: Request):
                 const params = new URLSearchParams({{
                     email: email,
                     password: password,
-                    environment: environment
+                    environment: 'production'  // Schwab is always production
                 }});
 
                 window.location.href = `/setup/schwab/initiate?${{params.toString()}}`;
@@ -435,7 +427,6 @@ async def setup_credentials(
     email: str = Form(...),
     password: Optional[str] = Form(None),
     platform: str = Form(...),
-    environment: str = Form(...),
     access_token: str = Form(...),
     account_number: str = Form(...),
     db: Session = Depends(get_db)
@@ -452,14 +443,11 @@ async def setup_credentials(
     - Trading credentials are encrypted with Fernet
     - HTTPS required in production
     """
-    logger.info(f"Setting up credentials for {email} on {platform} ({environment})")
+    logger.info(f"Setting up credentials for {email} on {platform}")
     
     # Validate platform
-    if platform not in ["tradier", "schwab"]:
+    if platform not in ["tradier", "tradier_paper", "schwab"]:
         raise HTTPException(400, "Unsupported platform")
-    
-    if environment not in ["sandbox", "production"]:
-        raise HTTPException(400, "Invalid environment")
     
     # Check if user is authenticated via OAuth
     auth_header = request.headers.get("Authorization")
@@ -504,38 +492,15 @@ async def setup_credentials(
                 raise HTTPException(401, "Invalid credentials")
             logger.info(f"User already exists: {user.user_id}")
     
-    # Encrypt credentials
-    encryption_service = get_encryption_service()
-    encrypted_token, encrypted_account = encryption_service.encrypt_credentials(
-        access_token, account_number
+    # Store credentials using auth_utils
+    from auth_utils import store_user_trading_credentials
+    store_user_trading_credentials(
+        user_id=str(user.user_id),
+        platform=platform,
+        access_token=access_token,
+        account_number=account_number,
+        db=db
     )
-    
-    # Store or update credentials
-    credential = db.query(UserCredential).filter(
-        UserCredential.user_id == user.user_id,
-        UserCredential.platform == platform,
-        UserCredential.environment == environment
-    ).first()
-    
-    if credential:
-        # Update existing
-        credential.encrypted_access_token = encrypted_token
-        credential.encrypted_account_number = encrypted_account
-        credential.updated_at = datetime.now(timezone.utc)
-        logger.info(f"Updated credentials for user {user.user_id}")
-    else:
-        # Create new
-        credential = UserCredential(
-            user_id=user.user_id,
-            platform=platform,
-            environment=environment,
-            encrypted_access_token=encrypted_token,
-            encrypted_account_number=encrypted_account
-        )
-        db.add(credential)
-        logger.info(f"Created new credentials for user {user.user_id}")
-    
-    db.commit()
     
     return HTMLResponse(f"""
     <!DOCTYPE html>
@@ -552,7 +517,7 @@ async def setup_credentials(
     <body>
         <div class="success">
             <h2>✅ Credentials Registered Successfully!</h2>
-            <p>Your {platform} credentials for {environment} have been encrypted and stored.</p>
+            <p>Your {platform} credentials have been encrypted and stored.</p>
         </div>
         
         <div class="info">
@@ -742,8 +707,7 @@ async def schwab_oauth_initiate(
     logger.info(f"Initiating Schwab OAuth for {email} ({environment})")
 
     # Validate environment
-    if environment not in ["sandbox", "production"]:
-        raise HTTPException(400, "Invalid environment")
+    # Environment validation removed - now using platform-only approach
 
     # Validate required environment variables
     app_key = os.getenv("SCHWAB_APP_KEY")

@@ -41,8 +41,8 @@ An OAuth 2.1 secured MCP (Model Context Protocol) server that provides trading c
 
 **Platform Clients**
 - `TradierClient` (`tradier_client.py`): Handles Tradier API interactions
-  - Supports sandbox and production environments
-  - Base URL: sandbox=`https://sandbox.tradier.com`, prod=`https://api.tradier.com`
+  - Supports multiple platforms (tradier, tradier_paper, schwab)
+  - Base URLs: tradier=`https://api.tradier.com`, tradier_paper=`https://sandbox.tradier.com`
   - Uses simple API token authentication
 - `SchwabClient` (`schwab_client.py`): Handles Schwab API interactions
   - Uses OAuth 2.0 with access/refresh tokens
@@ -94,7 +94,7 @@ Database is auto-initialized on server startup via `init_database()` in `databas
 *Tradier (Token-based):*
 Navigate to `/setup`, select "Tradier" platform, and enter:
 - `email`, `password` (for new users)
-- `environment` ('sandbox' or 'production')
+- `platform` ('tradier', 'tradier_paper', or 'schwab')
 - `access_token` (Tradier API token)
 - `account_number`
 
@@ -132,8 +132,7 @@ All MCP tools follow this pattern:
 @mcp.tool()
 async def tool_name(ctx: Context, ...) -> str:
     user_id, db = get_user_context_from_ctx(ctx)
-    environment = "sandbox" if use_sandbox else "production"
-    client, account_number = get_trading_client_for_user(user_id, platform, environment, db)
+    client, account_number = get_trading_client_for_user(user_id, platform, db)
     # Use client to call platform API
 ```
 

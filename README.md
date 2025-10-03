@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that provides trading capabilities for var
 ## Features
 
 - **Multi-Platform Support**: Extensible factory pattern for multiple brokerages
-- **Sandbox & Production**: Toggle between test and live trading environments
+- **Multiple Platforms**: Support for Tradier (production and paper) and Schwab
 - **Comprehensive Trading Tools**: Quotes, options chains, account info, order placement, and more
 - **MCP Integration**: Works with Claude Desktop and other MCP clients
 
@@ -35,15 +35,13 @@ A Model Context Protocol (MCP) server that provides trading capabilities for var
    
    **For Tradier:**
    ```bash
-   # Tradier Sandbox (for testing)
-   TRADIER_SANDBOX_ACCESS_TOKEN=your_sandbox_token_here
-   TRADIER_SANDBOX_ACCOUNT_NUMBER=your_sandbox_account_here
-   TRADIER_SANDBOX_ENDPOINT=https://sandbox.tradier.com
+   # Tradier Paper Trading (for testing)
+   TRADIER_PAPER_ACCESS_TOKEN=your_paper_token_here
+   TRADIER_PAPER_ACCOUNT_NUMBER=your_paper_account_here
    
    # Tradier Production (for live trading)
    TRADIER_ACCESS_TOKEN=your_production_token_here
    TRADIER_ACCOUNT_NUMBER=your_production_account_here
-   TRADIER_ENDPOINT=https://api.tradier.com
    ```
    
    **For Schwab:**
@@ -77,12 +75,10 @@ Add this to your Claude Desktop configuration:
         "trading.py"
       ],
       "env": {
-        "TRADIER_SANDBOX_ACCESS_TOKEN": "your_token",
-        "TRADIER_SANDBOX_ACCOUNT_NUMBER": "your_account",
+        "TRADIER_PAPER_ACCESS_TOKEN": "your_paper_token",
+        "TRADIER_PAPER_ACCOUNT_NUMBER": "your_paper_account",
         "TRADIER_ACCESS_TOKEN": "your_prod_token",
-        "TRADIER_ACCOUNT_NUMBER": "your_prod_account",
-        "TRADIER_SANDBOX_ENDPOINT": "https://sandbox.tradier.com",
-        "TRADIER_ENDPOINT": "https://api.tradier.com"
+        "TRADIER_ACCOUNT_NUMBER": "your_prod_account"
       }
     }
   }

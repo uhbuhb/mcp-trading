@@ -12,21 +12,16 @@ from trading_platform_interface import TradingPlatformInterface
 class TradierClient(TradingPlatformInterface):
     """Client for interacting with the Tradier API."""
     
-    def __init__(self, access_token: str, sandbox: bool = True):
+    def __init__(self, access_token: str, base_url: str):
         """
         Initialize the Tradier client.
         
         Args:
             access_token: Your Tradier API access token
-            sandbox: Whether to use sandbox environment (default: True)
+            base_url: Base URL for the API (e.g., 'https://api.tradier.com' or 'https://sandbox.tradier.com')
         """
         self.access_token = access_token
-        self.sandbox = sandbox
-        
-        if sandbox:
-            self.base_url = "https://sandbox.tradier.com"
-        else:
-            self.base_url = "https://api.tradier.com"
+        self.base_url = base_url
         
         
         self.headers = {
@@ -402,7 +397,7 @@ class TradierClient(TradingPlatformInterface):
             raise Exception(error_msg)
 
     def place_multileg_order(self, account_id: str, symbol: str, legs: list, 
-                           order_type: str = 'market', duration: str = 'day', 
+                           order_type: str = 'market', duration: str = 'day', session: str = 'normal',
                            preview: bool = False, price: Optional[float] = None) -> Dict[str, Any]:
         """
         Place a multileg order (spread trade) or preview it.
@@ -416,6 +411,7 @@ class TradierClient(TradingPlatformInterface):
                 - quantity: Number of contracts (integer)
             order_type: Order type ('market' or 'limit')
             duration: Order duration ('day', 'gtc', etc.)
+            session: Not used in this client
             preview: If True, preview the order without executing
             price: Net price for limit orders (positive for debit, negative for credit)
             

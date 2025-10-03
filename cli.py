@@ -19,13 +19,12 @@ load_dotenv()
 # HELPER FUNCTIONS
 # ============================================================================
 
-def get_platform_client(platform: str, environment: str):
+def get_platform_client(platform: str):
     """
-    Get a client instance for the specified platform and environment.
+    Get a client instance for the specified platform.
 
     Args:
-        platform: Trading platform ('tradier' or 'schwab')
-        environment: Environment ('sandbox' or 'production')
+        platform: Trading platform ('tradier', 'tradier_paper', or 'schwab')
 
     Returns:
         Tuple of (client, account_identifier)
@@ -34,20 +33,23 @@ def get_platform_client(platform: str, environment: str):
         click.ClickException: If configuration is invalid
     """
     if platform == "tradier":
-        # Tradier uses simple access tokens
-        if environment == "sandbox":
-            access_token = os.getenv("TRADIER_SANDBOX_ACCESS_TOKEN")
-            account_id = os.getenv("TRADIER_SANDBOX_ACCOUNT_NUMBER")
-            if not access_token:
-                raise click.ClickException("TRADIER_SANDBOX_ACCESS_TOKEN environment variable is required")
-        else:
-            access_token = os.getenv("TRADIER_ACCESS_TOKEN")
-            account_id = os.getenv("TRADIER_ACCOUNT_NUMBER")
-            if not access_token:
-                raise click.ClickException("TRADIER_ACCESS_TOKEN environment variable is required")
-
-        use_sandbox = (environment == "sandbox")
-        client = TradierClient(access_token=access_token, sandbox=use_sandbox)
+        # Tradier production
+        access_token = os.getenv("TRADIER_ACCESS_TOKEN")
+        account_id = os.getenv("TRADIER_ACCOUNT_NUMBER")
+        if not access_token:
+            raise click.ClickException("TRADIER_ACCESS_TOKEN environment variable is required")
+        
+        client = TradierClient(access_token=access_token, base_url="https://api.tradier.com")
+        return client, account_id
+        
+    elif platform == "tradier_paper":
+        # Tradier paper trading
+        access_token = os.getenv("TRADIER_PAPER_ACCESS_TOKEN")
+        account_id = os.getenv("TRADIER_PAPER_ACCOUNT_NUMBER")
+        if not access_token:
+            raise click.ClickException("TRADIER_PAPER_ACCESS_TOKEN environment variable is required")
+        
+        client = TradierClient(access_token=access_token, base_url="https://sandbox.tradier.com")
         return client, account_id
 
     elif platform == "schwab":
@@ -81,29 +83,24 @@ def get_platform_client(platform: str, environment: str):
         raise click.ClickException(f"Unsupported platform: {platform}")
 
 
-def determine_environment(platform: str, production: bool) -> str:
+def determine_platform(platform: str, production: bool) -> str:
     """
-    Determine which environment to use based on platform and flags.
-
-    For Tradier: sandbox by default, production if --production
-    For Schwab: auto-detect which credentials exist
+    Determine which platform to use based on input and flags.
 
     Args:
-        platform: Trading platform
+        platform: Trading platform input
         production: Whether --production flag was specified
 
     Returns:
-        Environment string ('sandbox' or 'production')
+        Platform string ('tradier', 'tradier_paper', or 'schwab')
     """
     if platform == "tradier":
-        return "production" if production else "sandbox"
-
+        return "tradier" if production else "tradier_paper"
     elif platform == "schwab":
-        # Schwab doesn't have sandbox, use whatever credentials are available
-        # Both paper and production accounts use same env vars, just different account setup
-        return "production"
-
-    return "sandbox"
+        return "schwab"
+    else:
+        # Allow direct platform specification
+        return platform
 
 
 def show_verbose_output(ctx, data, title="Raw API Response"):
@@ -131,20 +128,20 @@ def cli(ctx, verbose):
 
 @cli.command()
 @click.argument('platform')
-@click.option('--production', is_flag=True, help='Use production environment (default: sandbox/paper)')
+@click.option('--production', is_flag=True, help='Use production environment (default: paper)')
 @click.option('--account-id', help='Specific account ID (optional)')
 @click.pass_context
 def positions(ctx, platform, production, account_id):
     """Get current trading positions."""
     try:
-        environment = determine_environment(platform, production)
-        client, default_account = get_platform_client(platform, environment)
+        actual_platform = determine_platform(platform, production)
+        client, default_account = get_platform_client(actual_platform)
 
         account_to_use = account_id or default_account
         if not account_to_use:
-            raise click.ClickException(f"No account ID available for {platform}")
+            raise click.ClickException(f"No account ID available for {actual_platform}")
 
-        click.echo(f"Getting positions for {platform} ({environment})...")
+        click.echo(f"Getting positions for {actual_platform}...")
 
         positions = client.get_positions(account_to_use)
 
@@ -176,15 +173,15 @@ def positions(ctx, platform, production, account_id):
 @cli.command()
 @click.argument('symbol')
 @click.argument('platform')
-@click.option('--production', is_flag=True, help='Use production environment (default: sandbox/paper)')
+@click.option('--production', is_flag=True, help='Use production environment (default: paper)')
 @click.pass_context
 def quote(ctx, symbol, platform, production):
     """Get quote for a stock symbol."""
     try:
-        environment = determine_environment(platform, production)
-        client, _ = get_platform_client(platform, environment)
+        actual_platform = determine_platform(platform, production)
+        client, _ = get_platform_client(actual_platform)
 
-        click.echo(f"Getting quote for {symbol} on {platform} ({environment})...\n")
+        click.echo(f"Getting quote for {symbol} on {actual_platform}...\n")
 
         quote = client.get_quote(symbol)
 
@@ -203,20 +200,20 @@ def quote(ctx, symbol, platform, production):
 
 @cli.command()
 @click.argument('platform')
-@click.option('--production', is_flag=True, help='Use production environment (default: sandbox/paper)')
+@click.option('--production', is_flag=True, help='Use production environment (default: paper)')
 @click.option('--account-id', help='Specific account ID (optional)')
 @click.pass_context
 def balance(ctx, platform, production, account_id):
     """Get account balance."""
     try:
-        environment = determine_environment(platform, production)
-        client, default_account = get_platform_client(platform, environment)
+        actual_platform = determine_platform(platform, production)
+        client, default_account = get_platform_client(actual_platform)
 
         account_to_use = account_id or default_account
         if not account_to_use:
-            raise click.ClickException(f"No account ID available for {platform}")
+            raise click.ClickException(f"No account ID available for {actual_platform}")
 
-        click.echo(f"Getting balance for {platform} ({environment})...\n")
+        click.echo(f"Getting balance for {actual_platform}...\n")
 
         balance = client.get_balance(account_to_use)
 
@@ -232,18 +229,18 @@ def balance(ctx, platform, production, account_id):
 
 @cli.command()
 @click.argument('platform')
-@click.option('--production', is_flag=True, help='Use production environment (default: sandbox/paper)')
+@click.option('--production', is_flag=True, help='Use production environment (default: paper)')
 @click.option('--account-id', help='Specific account ID (optional)')
 @click.pass_context
 def account_info(ctx, platform, production, account_id):
     """Get account information."""
     try:
-        environment = determine_environment(platform, production)
-        client, default_account = get_platform_client(platform, environment)
+        actual_platform = determine_platform(platform, production)
+        client, default_account = get_platform_client(actual_platform)
 
         account_to_use = account_id or default_account
 
-        click.echo(f"Getting account information for {platform} ({environment})...\n")
+        click.echo(f"Getting account information for {actual_platform}...\n")
 
         account_info = client.get_account_info(account_to_use)
 
@@ -266,20 +263,20 @@ def orders(ctx):
 
 @orders.command('list')
 @click.argument('platform')
-@click.option('--production', is_flag=True, help='Use production environment (default: sandbox/paper)')
+@click.option('--production', is_flag=True, help='Use production environment (default: paper)')
 @click.option('--account-id', help='Specific account ID (optional)')
 @click.pass_context
 def orders_list(ctx, platform, production, account_id):
     """List trading orders."""
     try:
-        environment = determine_environment(platform, production)
-        client, default_account = get_platform_client(platform, environment)
+        actual_platform = determine_platform(platform, production)
+        client, default_account = get_platform_client(actual_platform)
 
         account_to_use = account_id or default_account
         if not account_to_use:
-            raise click.ClickException(f"No account ID available for {platform}")
+            raise click.ClickException(f"No account ID available for {actual_platform}")
 
-        click.echo(f"Getting orders for {platform} ({environment})...")
+        click.echo(f"Getting orders for {actual_platform}...")
 
         orders = client.get_orders(account_id=account_to_use, include_filled=True)
 
@@ -308,20 +305,20 @@ def orders_list(ctx, platform, production, account_id):
 @orders.command('cancel')
 @click.argument('order_id')
 @click.argument('platform')
-@click.option('--production', is_flag=True, help='Use production environment (default: sandbox/paper)')
+@click.option('--production', is_flag=True, help='Use production environment (default: paper)')
 @click.option('--account-id', help='Specific account ID (optional)')
 @click.pass_context
 def orders_cancel(ctx, order_id, platform, production, account_id):
     """Cancel an existing order."""
     try:
-        environment = determine_environment(platform, production)
-        client, default_account = get_platform_client(platform, environment)
+        actual_platform = determine_platform(platform, production)
+        client, default_account = get_platform_client(actual_platform)
 
         account_to_use = account_id or default_account
         if not account_to_use:
-            raise click.ClickException(f"No account ID available for {platform}")
+            raise click.ClickException(f"No account ID available for {actual_platform}")
 
-        click.echo(f"Cancelling order {order_id} on {platform} ({environment})...")
+        click.echo(f"Cancelling order {order_id} on {actual_platform}...")
 
         response = client.cancel_order(account_id=account_to_use, order_id=order_id)
 

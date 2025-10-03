@@ -35,8 +35,7 @@ class UserCredential(Base):
     __tablename__ = "user_credentials"
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), primary_key=True)
-    platform = Column(String, primary_key=True)  # 'tradier', 'schwab'
-    environment = Column(String, primary_key=True)  # 'sandbox' or 'production'
+    platform = Column(String, primary_key=True)  # 'tradier', 'tradier_paper', 'schwab'
     encrypted_access_token = Column(LargeBinary, nullable=False)
     encrypted_account_number = Column(LargeBinary, nullable=False)
     encrypted_refresh_token = Column(LargeBinary, nullable=True)  # For OAuth platforms like Schwab
@@ -110,7 +109,7 @@ class SchwabOAuthState(Base):
     state = Column(String, primary_key=True)  # OAuth state parameter
     email = Column(String, nullable=False)
     password = Column(String, nullable=True)  # For new users
-    environment = Column(String, nullable=False)  # 'sandbox' or 'production'
+    # environment column removed - now using platform-only keys
     code_verifier = Column(String, nullable=False)  # PKCE code verifier
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
