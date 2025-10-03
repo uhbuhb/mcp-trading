@@ -371,8 +371,8 @@ class SchwabClient(TradingPlatformInterface):
                 "Accept": "application/json"
             }
             
-            # Get orders from last 60 days
-            from_date = datetime.now() - timedelta(days=60)
+            # Get orders from last 90 days to ensure we don't miss recent orders
+            from_date = datetime.now() - timedelta(days=90)
             to_date = datetime.now()
             
             url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}/orders"
@@ -394,8 +394,12 @@ class SchwabClient(TradingPlatformInterface):
             data = response.json()
 
             if isinstance(data, list):
+                # Debug: Log the structure of the first order to understand the format
+                if data:
+                    logger.info(f"Sample order structure: {json.dumps(data[0], indent=2)}")
                 return data
             else:
+                logger.warning(f"Unexpected response format: {type(data)} - {data}")
                 return []
 
         except Exception as e:
@@ -578,15 +582,25 @@ class SchwabClient(TradingPlatformInterface):
             order_payload = order.build()
             logger.info(f"Schwab order payload: {json.dumps(order_payload, indent=2)}")
             
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders"
+            if preview:
+                url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/previewOrder"
+            else:
+                url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders"
+                
             response = self.http_client.post(url, headers=headers, json=order_payload)
             
             # Log response details for debugging
-            if response.status_code != 200:
+            if response.status_code not in [200, 201]:
                 logger.error(f"Schwab API error: {response.status_code} - {response.text}")
                 logger.error(f"Request payload was: {json.dumps(order_payload, indent=2)}")
             
             response.raise_for_status()
+            
+            # Handle empty response body (common for successful order creation)
+            if not response.text.strip():
+                logger.info(f"Order created successfully with status {response.status_code} (empty response body)")
+                return {"status": "success", "message": "Order created successfully"}
+            
             return response.json()
 
         except Exception as e:
@@ -726,7 +740,8 @@ class SchwabClient(TradingPlatformInterface):
             raise Exception(f"Account history retrieval failed: {e}")
 
     def change_order(self, account_id: str, order_id: str, order_type: Optional[str] = None,
-                    price: Optional[float] = None, duration: Optional[str] = None) -> Dict[str, Any]:
+                    price: Optional[float] = None, stop: Optional[float] = None,
+                    duration: Optional[str] = None, quantity: Optional[float] = None) -> Dict[str, Any]:
         """
         Modify an existing order.
 
@@ -735,7 +750,9 @@ class SchwabClient(TradingPlatformInterface):
             order_id: Order ID to modify
             order_type: New order type (optional)
             price: New price (optional)
+            stop: New stop price (optional)
             duration: New duration (optional)
+            quantity: New quantity (optional)
 
         Returns:
             Modification response dictionary
@@ -749,29 +766,102 @@ class SchwabClient(TradingPlatformInterface):
                 "Content-Type": "application/json"
             }
             
-            # First get the current order to understand its structure
-            get_url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
-            get_response = self.http_client.get(get_url, headers=headers)
-            get_response.raise_for_status()
-            current_order = get_response.json()
+            # Get the current order by fetching all orders and finding the specific one
+            # Schwab API doesn't support fetching individual orders by ID directly
+            logger.info(f"Fetching orders to find order {order_id}")
+            orders = self.get_orders(account_id, include_filled=True)
             
-            # Build modification payload
-            modification_payload = current_order.copy()
+            # Debug: Log all order IDs to help with troubleshooting
+            logger.info(f"Found {len(orders)} orders in account")
+            order_ids = [order.get('orderId') for order in orders if order.get('orderId')]
+            logger.info(f"Order IDs found: {order_ids}")
+            
+            current_order = None
+            for order in orders:
+                order_id_from_api = order.get('orderId')
+                logger.info(f"Comparing order ID: '{order_id_from_api}' (type: {type(order_id_from_api)}) with target: '{order_id}' (type: {type(order_id)})")
+                
+                # Handle both string and integer comparisons
+                if (order_id_from_api == order_id or 
+                    str(order_id_from_api) == str(order_id) or
+                    order_id_from_api == int(order_id) if str(order_id).isdigit() else False):
+                    current_order = order
+                    break
+            
+            if not current_order:
+                # Try alternative ID fields that Schwab might use
+                for order in orders:
+                    # Check if the ID might be in a different field
+                    for key in ['orderId', 'id', 'order_id', 'orderNumber']:
+                        if order.get(key) == order_id:
+                            current_order = order
+                            logger.info(f"Found order using field '{key}': {order_id}")
+                            break
+                    if current_order:
+                        break
+                
+                if not current_order:
+                    raise Exception(f"Order {order_id} not found in account orders. Available order IDs: {order_ids}")
+            
+            logger.info(f"Successfully found order {order_id}: {json.dumps(current_order, indent=2)}")
+            
+            # Build modification payload with required fields from Schwab API spec
+            modification_payload = {
+                "session": current_order.get('session'),
+                "duration": current_order.get('duration'),
+                "orderType": current_order.get('orderType'),
+                "quantity": current_order.get('quantity'),
+                "filledQuantity": current_order.get('filledQuantity'),
+                "remainingQuantity": current_order.get('remainingQuantity'),
+                "orderStrategyType": current_order.get('orderStrategyType'),
+                "orderLegCollection": current_order.get('orderLegCollection', []).copy()
+            }
+            
+            # Add price if it exists in the original order
+            if 'price' in current_order:
+                modification_payload['price'] = current_order['price']
+            
+            # Add complex order strategy type if it exists
+            if 'complexOrderStrategyType' in current_order:
+                modification_payload['complexOrderStrategyType'] = current_order['complexOrderStrategyType']
             
             # Update fields if provided
             if order_type is not None:
                 modification_payload['orderType'] = order_type.upper()
             if price is not None:
                 modification_payload['price'] = price
+            if stop is not None:
+                modification_payload['stopPrice'] = stop
             if duration is not None:
                 modification_payload['duration'] = duration.upper()
+            if quantity is not None:
+                # Update quantity at both order level and leg level
+                modification_payload['quantity'] = int(quantity)
+                modification_payload['remainingQuantity'] = int(quantity) - modification_payload.get('filledQuantity', 0)
+                for leg in modification_payload['orderLegCollection']:
+                    leg['quantity'] = int(quantity)
             
             # Replace the order
             replace_url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
+            logger.info(f"Modifying order at: {replace_url}")
+            logger.info(f"Modification payload: {json.dumps(modification_payload, indent=2)}")
+            
             response = self.http_client.put(replace_url, headers=headers, json=modification_payload)
-            response.raise_for_status()
+            
+            if response.status_code not in [200, 201]:
+                logger.error(f"Failed to modify order {order_id}: {response.status_code} - {response.text}")
+                raise Exception(f"Failed to modify order {order_id}: {response.status_code} - {response.text}")
+            
+            logger.info(f"Successfully modified order {order_id}")
+            
+            # Handle empty response body (common for successful order modifications)
+            if not response.text.strip():
+                logger.info(f"Order modified successfully with status {response.status_code} (empty response body)")
+                return {"status": "success", "message": "Order modified successfully"}
+            
             return response.json()
 
         except Exception as e:
             logger.error(f"Failed to modify order {order_id}: {e}")
             raise Exception(f"Order modification failed: {e}")
+
