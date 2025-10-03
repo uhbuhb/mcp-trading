@@ -8,9 +8,6 @@ import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta, timezone
-from schwab.auth import easy_client
-from schwab.orders.equities import equity_buy_market, equity_sell_market
-from schwab.orders.options import option_buy_to_open_market, option_sell_to_close_market
 from schwab.orders.generic import OrderBuilder
 from schwab.orders.common import OrderType, Duration, Session, OrderStrategyType
 from schwab.orders.common import OptionInstruction
@@ -63,6 +60,25 @@ class SchwabClient(TradingPlatformInterface):
         self.http_client = httpx.Client()
         
         logger.info(f"Initialized SchwabClient for account hash: {account_hash[:8]}...")
+
+    def _get_auth_headers(self) -> Dict[str, str]:
+        """Get standard authentication headers for API requests."""
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json"
+        }
+
+    def _get_json_headers(self) -> Dict[str, str]:
+        """Get headers for JSON API requests."""
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+    def _resolve_account_id(self, account_id: Optional[str]) -> str:
+        """Resolve account ID, using default if not provided."""
+        return account_id or self.account_hash
 
     def _check_token_refresh(self):
         """Check if token needs refresh and refresh if necessary."""
@@ -140,14 +156,11 @@ class SchwabClient(TradingPlatformInterface):
             Account information dictionary
         """
         self._check_token_refresh()
-        account_to_use = account_id or self.account_hash
+        account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            headers = self._get_auth_headers()
             
             url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
             response = self.http_client.get(url, headers=headers)
@@ -175,7 +188,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to get account info: {e}")
-            raise Exception(f"API request failed: {e}")
+            raise
 
     def get_account_number(self) -> str:
         """
@@ -197,14 +210,11 @@ class SchwabClient(TradingPlatformInterface):
             List of position dictionaries
         """
         self._check_token_refresh()
-        account_to_use = account_id or self.account_hash
+        account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            headers = self._get_auth_headers()
             
             # Get account with positions
             url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
@@ -243,7 +253,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to get positions: {e}")
-            raise Exception(f"API request failed: {e}")
+            raise
 
     def get_quote(self, symbol: str) -> Dict[str, Any]:
         """
@@ -259,10 +269,7 @@ class SchwabClient(TradingPlatformInterface):
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            headers = self._get_auth_headers()
             
             url = f"https://api.schwabapi.com/marketdata/v1/quotes"
             params = {"symbols": symbol}
@@ -294,7 +301,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to get quote: {e}")
-            raise Exception(f"API request failed: {e}")
+            raise
 
     def get_balance(self, account_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -307,14 +314,11 @@ class SchwabClient(TradingPlatformInterface):
             Balance information dictionary
         """
         self._check_token_refresh()
-        account_to_use = account_id or self.account_hash
+        account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            headers = self._get_auth_headers()
             
             url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
             response = self.http_client.get(url, headers=headers)
@@ -324,7 +328,6 @@ class SchwabClient(TradingPlatformInterface):
 
             if 'securitiesAccount' in data:
                 balances = data['securitiesAccount'].get('currentBalances', {})
-                initial_balances = data['securitiesAccount'].get('initialBalances', {})
 
                 return {
                     'total_cash': float(balances.get('cashBalance', 0)),
@@ -348,7 +351,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to get balance: {e}")
-            raise Exception(f"API request failed: {e}")
+            raise
 
     def get_orders(self, account_id: Optional[str] = None, include_filled: bool = True) -> List[Dict[str, Any]]:
         """
@@ -362,14 +365,11 @@ class SchwabClient(TradingPlatformInterface):
             List of order dictionaries
         """
         self._check_token_refresh()
-        account_to_use = account_id or self.account_hash
+        account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            headers = self._get_auth_headers()
             
             # Get orders from last 90 days to ensure we don't miss recent orders
             from_date = datetime.now() - timedelta(days=90)
@@ -382,8 +382,6 @@ class SchwabClient(TradingPlatformInterface):
                 "maxResults": 500
             }
             
-            logger.info(f"Requesting orders from URL: {url}")
-            logger.info(f"Request params: {params}")
             
             response = self.http_client.get(url, headers=headers, params=params)
             
@@ -394,9 +392,6 @@ class SchwabClient(TradingPlatformInterface):
             data = response.json()
 
             if isinstance(data, list):
-                # Debug: Log the structure of the first order to understand the format
-                if data:
-                    logger.info(f"Sample order structure: {json.dumps(data[0], indent=2)}")
                 return data
             else:
                 logger.warning(f"Unexpected response format: {type(data)} - {data}")
@@ -404,7 +399,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to get orders: {e}")
-            raise Exception(f"API request failed: {e}")
+            raise
 
     def create_multi_leg_option_order(self, legs: List[Dict[str, Any]], 
                                     order_type: str = 'market',
@@ -434,7 +429,6 @@ class SchwabClient(TradingPlatformInterface):
 
 
             # Set order type - transform interface format to Schwab format
-            logger.info(f"create_multi_leg_option_order: order_type={order_type}, price={price} (type: {type(price)})")
             if order_type == 'market':
                 order.set_order_type(OrderType.MARKET)
             elif order_type == 'limit':
@@ -445,7 +439,6 @@ class SchwabClient(TradingPlatformInterface):
                 if price < 0:
                     order.set_order_type(OrderType.NET_CREDIT)
 
-                logger.info(f"Setting price to: {str(price)}")
                 order.set_price(str(price))  # Schwab expects price as string
             else:
                 raise ValueError(f"Unsupported order type: {order_type}. Only 'market' and 'limit' are supported.")
@@ -485,7 +478,6 @@ class SchwabClient(TradingPlatformInterface):
                 # Convert OCC option symbol to Schwab format
                 try:
                     schwab_symbol = convert_occ_to_schwab_format(option_symbol)
-                    logger.info(f"Converted option symbol: '{option_symbol}' -> '{schwab_symbol}' (length: {len(schwab_symbol)})")
                 except Exception as e:
                     logger.error(f"Failed to convert option symbol {option_symbol}: {e}")
                     raise ValueError(f"Invalid option symbol format: {option_symbol}")
@@ -511,7 +503,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to create multi-leg option order: {e}")
-            raise Exception(f"Multi-leg order creation failed: {e}")
+            raise
 
     def place_multileg_order(self, account_id: str, symbol: str, legs: list, 
                            order_type: str = 'market', duration: str = 'day', session: str = 'normal',
@@ -536,7 +528,6 @@ class SchwabClient(TradingPlatformInterface):
         """
         self._check_token_refresh()
         
-        logger.info(f"place_multileg_order called with price: {price} (type: {type(price)})")
 
         try:
             # Create OrderBuilder from the parameters
@@ -553,7 +544,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to place multileg order: {e}")
-            raise Exception(f"Multileg order placement failed: {e}")
+            raise
 
     def place_multi_leg_option_order(self, account_id: str, order: OrderBuilder,
                                    preview: bool = False) -> Dict[str, Any]:
@@ -572,15 +563,10 @@ class SchwabClient(TradingPlatformInterface):
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json",
-                "Content-Type": "application/json"
-            }
+            headers = self._get_json_headers()
             
             # Build the order payload
             order_payload = order.build()
-            logger.info(f"Schwab order payload: {json.dumps(order_payload, indent=2)}")
             
             if preview:
                 url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/previewOrder"
@@ -592,7 +578,6 @@ class SchwabClient(TradingPlatformInterface):
             # Log response details for debugging
             if response.status_code not in [200, 201]:
                 logger.error(f"Schwab API error: {response.status_code} - {response.text}")
-                logger.error(f"Request payload was: {json.dumps(order_payload, indent=2)}")
             
             response.raise_for_status()
             
@@ -605,67 +590,8 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to place multi-leg option order: {e}")
-            raise Exception(f"Multi-leg order placement failed: {e}")
+            raise
 
-    def modify_order(self, account_id: str, order_id: str, 
-                    order_type: Optional[str] = None,
-                    price: Optional[float] = None,
-                    duration: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Modify an existing order by updating only the specified parameters.
-
-        Args:
-            account_id: Account hash
-            order_id: Order ID to modify
-            order_type: New order type ('market', 'limit') - optional
-            price: New limit price (for limit orders) - optional
-            duration: New order duration ('day', 'gtc', 'pre', 'post') - optional
-
-        Returns:
-            Order modification response dictionary
-        """
-        self._check_token_refresh()
-
-        try:
-            # Get the existing order first to understand its current state
-            orders = self.get_orders(account_id, include_filled=True)
-            existing_order = None
-            
-            for order in orders:
-                if order.get('orderId') == order_id:
-                    existing_order = order
-                    break
-            
-            if not existing_order:
-                raise Exception(f"Order {order_id} not found")
-
-            # Check if order is filled
-            if existing_order.get('status') == 'FILLED':
-                raise Exception(f"Order modification failed: Order {order_id} is already filled")
-
-            # update values of existing_order with received values
-            if order_type is not None:
-                existing_order['orderType'] = order_type
-            if price is not None:
-                existing_order['price'] = price
-            if duration is not None:
-                existing_order['duration'] = duration
-            
-            # Replace the order with the modified version
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json",
-                "Content-Type": "application/json"
-            }
-            
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
-            response = self.http_client.put(url, headers=headers, json=existing_order)
-            response.raise_for_status()
-            return response.json()
-
-        except Exception as e:
-            logger.error(f"Failed to modify order: {e}")
-            raise Exception(f"Order modification failed: {e}")
 
     def cancel_order(self, account_id: str, order_id: str) -> Dict[str, Any]:
         """
@@ -682,10 +608,7 @@ class SchwabClient(TradingPlatformInterface):
 
         try:
             # Make direct API call to Schwab
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            headers = self._get_auth_headers()
             
             url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
             response = self.http_client.delete(url, headers=headers)
@@ -694,7 +617,33 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to cancel order: {e}")
-            raise Exception(f"Cancel order failed: {e}")
+            raise
+
+    def get_order(self, account_id: str, order_id: str) -> Dict[str, Any]:
+        """
+        Get a specific order by ID.
+
+        Args:
+            account_id: Account hash
+            order_id: Order ID to retrieve
+
+        Returns:
+            Order dictionary
+        """
+        self._check_token_refresh()
+
+        try:
+            headers = self._get_auth_headers()
+            
+            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
+            response = self.http_client.get(url, headers=headers)
+            response.raise_for_status()
+            
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Failed to get order {order_id}: {e}")
+            raise
 
     def get_account_history(self, account_id: Optional[str] = None, limit: Optional[int] = None,
                            start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -713,11 +662,8 @@ class SchwabClient(TradingPlatformInterface):
         self._check_token_refresh()
 
         try:
-            account_to_use = account_id or self.account_hash
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json"
-            }
+            account_to_use = self._resolve_account_id(account_id)
+            headers = self._get_auth_headers()
             
             # Build query parameters
             params = {}
@@ -737,7 +683,7 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to get account history: {e}")
-            raise Exception(f"Account history retrieval failed: {e}")
+            raise
 
     def change_order(self, account_id: str, order_id: str, order_type: Optional[str] = None,
                     price: Optional[float] = None, stop: Optional[float] = None,
@@ -760,50 +706,14 @@ class SchwabClient(TradingPlatformInterface):
         self._check_token_refresh()
 
         try:
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Accept": "application/json",
-                "Content-Type": "application/json"
-            }
+            headers = self._get_json_headers()
             
-            # Get the current order by fetching all orders and finding the specific one
-            # Schwab API doesn't support fetching individual orders by ID directly
-            logger.info(f"Fetching orders to find order {order_id}")
-            orders = self.get_orders(account_id, include_filled=True)
+            # Get the current order using direct API call
+            current_order = self.get_order(account_id, order_id)
             
-            # Debug: Log all order IDs to help with troubleshooting
-            logger.info(f"Found {len(orders)} orders in account")
-            order_ids = [order.get('orderId') for order in orders if order.get('orderId')]
-            logger.info(f"Order IDs found: {order_ids}")
-            
-            current_order = None
-            for order in orders:
-                order_id_from_api = order.get('orderId')
-                logger.info(f"Comparing order ID: '{order_id_from_api}' (type: {type(order_id_from_api)}) with target: '{order_id}' (type: {type(order_id)})")
-                
-                # Handle both string and integer comparisons
-                if (order_id_from_api == order_id or 
-                    str(order_id_from_api) == str(order_id) or
-                    order_id_from_api == int(order_id) if str(order_id).isdigit() else False):
-                    current_order = order
-                    break
-            
-            if not current_order:
-                # Try alternative ID fields that Schwab might use
-                for order in orders:
-                    # Check if the ID might be in a different field
-                    for key in ['orderId', 'id', 'order_id', 'orderNumber']:
-                        if order.get(key) == order_id:
-                            current_order = order
-                            logger.info(f"Found order using field '{key}': {order_id}")
-                            break
-                    if current_order:
-                        break
-                
-                if not current_order:
-                    raise Exception(f"Order {order_id} not found in account orders. Available order IDs: {order_ids}")
-            
-            logger.info(f"Successfully found order {order_id}: {json.dumps(current_order, indent=2)}")
+            # Check if order is filled
+            if current_order.get('status') == 'FILLED':
+                raise Exception(f"Order modification failed: Order {order_id} is already filled")
             
             # Build modification payload with required fields from Schwab API spec
             modification_payload = {
@@ -843,8 +753,6 @@ class SchwabClient(TradingPlatformInterface):
             
             # Replace the order
             replace_url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
-            logger.info(f"Modifying order at: {replace_url}")
-            logger.info(f"Modification payload: {json.dumps(modification_payload, indent=2)}")
             
             response = self.http_client.put(replace_url, headers=headers, json=modification_payload)
             
@@ -863,5 +771,5 @@ class SchwabClient(TradingPlatformInterface):
 
         except Exception as e:
             logger.error(f"Failed to modify order {order_id}: {e}")
-            raise Exception(f"Order modification failed: {e}")
+            raise
 
