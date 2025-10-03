@@ -8,9 +8,11 @@ import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta, timezone
+from schwab.auth import client_from_access_functions
 from schwab.orders.generic import OrderBuilder
 from schwab.orders.common import OrderType, Duration, Session, OrderStrategyType
 from schwab.orders.common import OptionInstruction
+from schwab.client.base import BaseClient
 from trading_platform_interface import TradingPlatformInterface
 from option_symbol_utils import convert_occ_to_schwab_format
 
@@ -25,7 +27,7 @@ class SchwabClient(TradingPlatformInterface):
                  app_key: Optional[str] = None, app_secret: Optional[str] = None,
                  token_expires_at: Optional[datetime] = None, token_path: Optional[str] = None):
         """
-        Initialize the Schwab client using stored tokens for API access.
+        Initialize the Schwab client using the schwab-py library with custom token management.
 
         Args:
             access_token: OAuth access token
@@ -48,102 +50,72 @@ class SchwabClient(TradingPlatformInterface):
             raise ValueError("SCHWAB_APP_KEY environment variable is required")
         if not self.app_secret:
             raise ValueError("SCHWAB_APP_SECRET environment variable is required")
-        if not access_token:
-            raise ValueError("access_token is required")
-        if not refresh_token:
-            raise ValueError("refresh_token is required")
         if not account_hash:
             raise ValueError("account_hash is required")
         
-        # Initialize HTTP client for direct API calls
-        import httpx
-        self.http_client = httpx.Client()
+        # Initialize schwab-py client with custom token management
+        self.schwab_client = client_from_access_functions(
+            api_key=self.app_key,
+            app_secret=self.app_secret,
+            token_read_func=self._read_token,
+            token_write_func=self._write_token
+        )
         
         logger.info(f"Initialized SchwabClient for account hash: {account_hash[:8]}...")
 
-    def _get_auth_headers(self) -> Dict[str, str]:
-        """Get standard authentication headers for API requests."""
+    def _read_token(self) -> Dict[str, Any]:
+        """
+        Read token for schwab-py client.
+        
+        Returns:
+            Token dictionary in the format expected by schwab-py
+        """
+        # Calculate token age in seconds
+        token_age = 0
+        if self.token_expires_at:
+            current_time = datetime.now(timezone.utc)
+            expires_at = self.token_expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            token_age = int((current_time - expires_at).total_seconds())
+        
+        # Return token in the format expected by schwab-py
         return {
-            "Authorization": f"Bearer {self.access_token}",
-            "Accept": "application/json"
+            "token": {
+                "access_token": self.access_token,
+                "refresh_token": self.refresh_token,
+                "token_type": "Bearer",
+                "expires_in": 1800,  # 30 minutes default
+                "scope": "trading"
+            },
+            "creation_timestamp": int(datetime.now(timezone.utc).timestamp()) - token_age
         }
 
-    def _get_json_headers(self) -> Dict[str, str]:
-        """Get headers for JSON API requests."""
-        return {
-            "Authorization": f"Bearer {self.access_token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
+    def _write_token(self, token: Dict[str, Any], *args, **kwargs) -> None:
+        """
+        Write token for schwab-py client.
+        
+        Args:
+            token: Updated token dictionary from schwab-py
+        """
+        # Update our internal token state
+        if "access_token" in token:
+            self.access_token = token["access_token"]
+        if "refresh_token" in token:
+            self.refresh_token = token["refresh_token"]
+        
+        # Update expiration time if provided
+        if "expires_in" in token:
+            expires_in = token["expires_in"]
+            self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        
+        logger.info("Token updated by schwab-py client")
 
     def _resolve_account_id(self, account_id: Optional[str]) -> str:
         """Resolve account ID, using default if not provided."""
         return account_id or self.account_hash
 
-    def _check_token_refresh(self):
-        """Check if token needs refresh and refresh if necessary."""
-        if not self.token_expires_at:
-            return  # No expiration info, assume token is valid
-        
-        # Check if token expires in the next 5 minutes
-        current_time = datetime.now(timezone.utc)
-        
-        # Handle timezone-aware comparison - ensure both datetimes are timezone-aware
-        expires_at = self.token_expires_at
-        # If expires_at is naive, assume it's UTC
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        
-        if expires_at > current_time + timedelta(minutes=5):
-            return  # Token is still valid
-        
-        logger.info("Access token expired or expiring soon, refreshing...")
-        self._refresh_access_token()
-    
-    def _refresh_access_token(self):
-        """Refresh the access token using the refresh token."""
-        import base64
-        
-        # Prepare refresh request
-        token_url = "https://api.schwabapi.com/v1/oauth/token"
-        
-        # Create Basic Auth header
-        credentials = f"{self.app_key}:{self.app_secret}"
-        basic_auth = base64.b64encode(credentials.encode()).decode()
-        
-        headers = {
-            "Authorization": f"Basic {basic_auth}",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-        
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": self.refresh_token
-        }
-        
-        try:
-            response = self.http_client.post(token_url, data=data, headers=headers)
-            response.raise_for_status()
-            
-            token_response = response.json()
-            
-            # Update tokens
-            self.access_token = token_response["access_token"]
-            if "refresh_token" in token_response:
-                self.refresh_token = token_response["refresh_token"]
-            
-            # Update expiration time
-            expires_in = token_response.get("expires_in", 1800)  # Default 30 minutes
-            self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-            
-            logger.info("Successfully refreshed access token")
-            
-            # TODO: Update stored credentials in database
-            # This would require access to the database session
-            
-        except Exception as e:
-            logger.error(f"Failed to refresh access token: {e}")
-            raise
+
 
     def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -155,17 +127,11 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Account information dictionary
         """
-        self._check_token_refresh()
         account_to_use = self._resolve_account_id(account_id)
 
         try:
-            # Make direct API call to Schwab
-            headers = self._get_auth_headers()
-            
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
-            response = self.http_client.get(url, headers=headers)
-            response.raise_for_status()
-            
+            # Use schwab-py client high-level method to get account info
+            response = self.schwab_client.get_account(account_to_use)
             data = response.json()
 
             if 'securitiesAccount' in data:
@@ -209,18 +175,11 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             List of position dictionaries
         """
-        self._check_token_refresh()
         account_to_use = self._resolve_account_id(account_id)
 
         try:
-            # Make direct API call to Schwab
-            headers = self._get_auth_headers()
-            
-            # Get account with positions
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
-            params = {"fields": "positions"}
-            response = self.http_client.get(url, headers=headers, params=params)
-            response.raise_for_status()
+            # Use schwab-py client high-level method to get account with positions
+            response = self.schwab_client.get_account(account_to_use, fields=BaseClient.Account.Fields.POSITIONS)
             
             data = response.json()
 
@@ -265,17 +224,9 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Quote information dictionary
         """
-        self._check_token_refresh()
-
         try:
-            # Make direct API call to Schwab
-            headers = self._get_auth_headers()
-            
-            url = f"https://api.schwabapi.com/marketdata/v1/quotes"
-            params = {"symbols": symbol}
-            response = self.http_client.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            
+            # Use schwab-py client high-level method to get quote
+            response = self.schwab_client.get_quote(symbol)
             data = response.json()
 
             if symbol in data:
@@ -313,17 +264,11 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Balance information dictionary
         """
-        self._check_token_refresh()
         account_to_use = self._resolve_account_id(account_id)
 
         try:
-            # Make direct API call to Schwab
-            headers = self._get_auth_headers()
-            
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}"
-            response = self.http_client.get(url, headers=headers)
-            response.raise_for_status()
-            
+            # Use schwab-py client high-level method to get account balance
+            response = self.schwab_client.get_account(account_to_use)
             data = response.json()
 
             if 'securitiesAccount' in data:
@@ -364,30 +309,19 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             List of order dictionaries
         """
-        self._check_token_refresh()
         account_to_use = self._resolve_account_id(account_id)
 
         try:
-            # Make direct API call to Schwab
-            headers = self._get_auth_headers()
-            
-            # Get orders from last 90 days to ensure we don't miss recent orders
+            # Use schwab-py client high-level method to get orders
             from_date = datetime.now() - timedelta(days=90)
             to_date = datetime.now()
             
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}/orders"
-            params = {
-                "fromEnteredTime": from_date.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                "toEnteredTime": to_date.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                "maxResults": 500
-            }
-            
-            
-            response = self.http_client.get(url, headers=headers, params=params)
-            
-            if response.status_code != 200:
-                logger.error(f"Orders API error: {response.status_code} - {response.text}")
-                response.raise_for_status()
+            response = self.schwab_client.get_orders_for_account(
+                account_to_use,
+                from_entered_datetime=from_date,
+                to_entered_datetime=to_date,
+                max_results=500
+            )
             
             data = response.json()
 
@@ -526,9 +460,6 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Order response dictionary
         """
-        self._check_token_refresh()
-        
-
         try:
             # Create OrderBuilder from the parameters
             order_builder = self.create_multi_leg_option_order(
@@ -559,21 +490,16 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Order response dictionary
         """
-        self._check_token_refresh()
-
         try:
-            # Make direct API call to Schwab
-            headers = self._get_json_headers()
-            
             # Build the order payload
             order_payload = order.build()
             
             if preview:
-                url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/previewOrder"
+                # Use schwab-py client high-level method to preview order
+                response = self.schwab_client.preview_order(account_id, order_payload)
             else:
-                url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders"
-                
-            response = self.http_client.post(url, headers=headers, json=order_payload)
+                # Use schwab-py client high-level method to place order
+                response = self.schwab_client.place_order(account_id, order_payload)
             
             # Log response details for debugging
             if response.status_code not in [200, 201]:
@@ -604,14 +530,9 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Cancel order response dictionary
         """
-        self._check_token_refresh()
-
         try:
-            # Make direct API call to Schwab
-            headers = self._get_auth_headers()
-            
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
-            response = self.http_client.delete(url, headers=headers)
+            # Use schwab-py client high-level method to cancel order
+            response = self.schwab_client.cancel_order(order_id, account_id)
             response.raise_for_status()
             return {"status": "success", "message": f"Order {order_id} cancelled"}
 
@@ -630,13 +551,9 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Order dictionary
         """
-        self._check_token_refresh()
-
         try:
-            headers = self._get_auth_headers()
-            
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
-            response = self.http_client.get(url, headers=headers)
+            # Use schwab-py client high-level method to get specific order
+            response = self.schwab_client.get_order(account_id, order_id)
             response.raise_for_status()
             
             return response.json()
@@ -659,23 +576,16 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             List of transaction dictionaries
         """
-        self._check_token_refresh()
-
         try:
             account_to_use = self._resolve_account_id(account_id)
-            headers = self._get_auth_headers()
             
-            # Build query parameters
-            params = {}
-            if limit is not None:
-                params['maxResults'] = limit
-            if start_date is not None:
-                params['startDate'] = start_date
-            if end_date is not None:
-                params['endDate'] = end_date
-            
-            url = f"https://api.schwabapi.com/trader/v1/accounts/{account_to_use}/transactions"
-            response = self.http_client.get(url, headers=headers, params=params)
+            # Use schwab-py client high-level method to get account history
+            response = self.schwab_client.get_transactions(
+                account_to_use,
+                max_results=limit,
+                start_date=start_date,
+                end_date=end_date
+            )
             response.raise_for_status()
             
             data = response.json()
@@ -703,12 +613,8 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Modification response dictionary
         """
-        self._check_token_refresh()
-
         try:
-            headers = self._get_json_headers()
-            
-            # Get the current order using direct API call
+            # Get the current order using schwab-py client
             current_order = self.get_order(account_id, order_id)
             
             # Check if order is filled
@@ -751,10 +657,8 @@ class SchwabClient(TradingPlatformInterface):
                 for leg in modification_payload['orderLegCollection']:
                     leg['quantity'] = int(quantity)
             
-            # Replace the order
-            replace_url = f"https://api.schwabapi.com/trader/v1/accounts/{account_id}/orders/{order_id}"
-            
-            response = self.http_client.put(replace_url, headers=headers, json=modification_payload)
+            # Use schwab-py client high-level method to replace the order
+            response = self.schwab_client.replace_order(account_id, order_id, modification_payload)
             
             if response.status_code not in [200, 201]:
                 logger.error(f"Failed to modify order {order_id}: {response.status_code} - {response.text}")
