@@ -109,7 +109,6 @@ class SchwabOAuthState(Base):
     state = Column(String, primary_key=True)  # OAuth state parameter
     email = Column(String, nullable=False)
     password = Column(String, nullable=True)  # For new users
-    # environment column removed - now using platform-only keys
     code_verifier = Column(String, nullable=False)  # PKCE code verifier
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -132,15 +131,40 @@ def get_database_url() -> str:
 def init_database():
     """Initialize database and create all tables."""
     database_url = get_database_url()
-    engine = create_engine(database_url, echo=True)
+    
+    # Configure engine with connection pooling for better performance
+    engine_kwargs = {}
+    if database_url.startswith("postgresql://"):
+        # PostgreSQL connection pooling configuration
+        engine_kwargs.update({
+            "pool_size": 10,          # Number of connections to maintain in the pool
+            "max_overflow": 20,       # Additional connections beyond pool_size
+            "pool_pre_ping": True,    # Verify connections before use
+            "pool_recycle": 3600,     # Recycle connections after 1 hour
+            "echo": False             # Set to True for SQL debugging
+        })
+    else:
+        # SQLite configuration
+        engine_kwargs.update({
+            "echo": False,
+            "pool_pre_ping": True
+        })
+    
+    engine = create_engine(database_url, **engine_kwargs)
     Base.metadata.create_all(engine)
     return engine
 
 def get_session_maker(engine=None):
-    """Get SQLAlchemy session maker."""
+    """Get SQLAlchemy session maker with optimized configuration."""
     if engine is None:
-        engine = create_engine(get_database_url())
-    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        engine = init_database()
+    
+    return sessionmaker(
+        autocommit=False, 
+        autoflush=False, 
+        bind=engine,
+        expire_on_commit=False  # Prevent lazy loading issues after commit
+    )
 
 # Session dependency for FastAPI
 SessionLocal = None
@@ -162,4 +186,38 @@ def get_db():
         yield db
     finally:
         db.close()
+
+class DatabaseSession:
+    """Context manager for database sessions with automatic cleanup."""
+    
+    def __init__(self):
+        if SessionLocal is None:
+            init_session_local()
+        self.db = None
+    
+    def __enter__(self):
+        self.db = SessionLocal()
+        return self.db
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.db:
+            try:
+                if exc_type is not None:
+                    # Rollback on exception
+                    self.db.rollback()
+                else:
+                    # Commit on success
+                    self.db.commit()
+            except Exception as e:
+                # Log rollback errors but don't suppress original exception
+                import logging
+                logger = logging.getLogger("database")
+                logger.error(f"Database session cleanup error: {e}")
+            finally:
+                self.db.close()
+                self.db = None
+
+def get_db_session() -> DatabaseSession:
+    """Get a database session context manager."""
+    return DatabaseSession()
 

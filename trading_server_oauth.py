@@ -14,11 +14,11 @@ from typing import Optional, Any
 from mcp.server.fastmcp import FastMCP, Context
 from sqlalchemy.orm import Session
 
-from tradier_client import TradierClient
-from schwab_client import SchwabClient
 from trading_platform_interface import TradingPlatformInterface
-from auth_utils import get_user_trading_credentials
+from trading_client_factory import TradingClientFactory
+from error_handling import handle_trading_error, TradingError, ErrorCode, validate_platform, validate_symbol, validate_price
 from request_context import get_user_id
+from auth_utils import get_user_trading_credentials
 
 # Configure logging
 logging.basicConfig(
@@ -40,9 +40,7 @@ logger.info("MCP Trading Server initialized")
 # Supported platforms
 SUPPORTED_PLATFORMS = ["tradier", "tradier_paper", "schwab"]
 
-class TradingPlatformError(Exception):
-    """Custom exception for trading platform errors."""
-    pass
+# Use TradingError from error_handling module instead of custom exception
 
 def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
     """
@@ -74,73 +72,13 @@ def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
     return user_id, db
 
 
-# Platform to base URL mapping
-PLATFORM_BASE_URLS = {
-    "tradier": "https://api.tradier.com",
-    "tradier_paper": "https://sandbox.tradier.com",
-    "schwab": None  # Schwab handles its own base URL
-}
-
-def get_trading_client_for_user(
-    user_id: str,
-    platform: str,
-    db: Session
-) -> tuple[TradingPlatformInterface, str]:
-    """
-    Create trading client with user-specific credentials.
-
-    Args:
-        user_id: Authenticated user ID from OAuth token
-        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
-        db: Database session
-
-    Returns:
-        Tuple of (client, account_identifier)
-        - For Tradier: account_identifier is account_number
-        - For Schwab: account_identifier is account_hash
-    """
-    logger.info(f"Creating client for user {user_id}, platform {platform}")
-
-    if platform not in SUPPORTED_PLATFORMS:
-        raise TradingPlatformError(f"Unsupported platform: {platform}")
-
-    # Fetch and decrypt credentials
-    try:
-        access_token, account_number, refresh_token, account_hash, token_expires_at = get_user_trading_credentials(
-            user_id, platform, db
-        )
-    except ValueError as e:
-        raise TradingPlatformError(str(e))
-
-    # Create client based on platform
-    if platform in ["tradier", "tradier_paper"]:
-        base_url = PLATFORM_BASE_URLS[platform]
-        client = TradierClient(access_token=access_token, base_url=base_url)
-        logger.info(f"Created Tradier client for user {user_id} ({platform})")
-        return client, account_number
-
-    elif platform == "schwab":
-        # Schwab requires refresh token and account hash
-        if not refresh_token:
-            raise TradingPlatformError("Schwab platform requires refresh token")
-        if not account_hash:
-            raise TradingPlatformError("Schwab platform requires account hash")
-
-        client = SchwabClient(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            account_hash=account_hash,
-            token_expires_at=token_expires_at
-        )
-        logger.info(f"Created Schwab client for user {user_id}")
-        return client, account_hash
-
-    raise TradingPlatformError(f"Platform {platform} not implemented")
+# Use TradingClientFactory instead of inline client creation
 
 # ============================================================================
 # MCP TOOLS WITH CONTEXT INJECTION
 # ============================================================================
 
+@handle_trading_error
 @mcp.tool()
 async def get_positions(
     ctx: Context,
@@ -161,54 +99,48 @@ async def get_positions(
     # Extract authenticated user context from FastMCP Context
     user_id, db = get_user_context_from_ctx(ctx)
     
-    try:
-        logger.info(f"get_positions - user: {user_id}, platform: {platform}")
-        
-        # Get user's trading client
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
-        
-        # Fetch positions
-        positions = client.get_positions(account_to_use)
-        
-        if not positions:
-            return json.dumps({
-                "status": "success",
-                "message": "No positions found",
-                "positions": []
-            }, indent=2)
-        
-        # Format positions
-        formatted_positions = [
-            {
-                "symbol": pos.get("symbol", "N/A"),
-                "description": pos.get("description", "N/A"),
-                "quantity": pos.get("quantity", "N/A"),
-                "cost_basis": pos.get("cost_basis", "N/A"),
-                "last_price": pos.get("last_price", "N/A"),
-                "market_value": pos.get("market_value", "N/A"),
-                "gain_loss": pos.get("gain_loss", "N/A"),
-                "gain_loss_percent": pos.get("gain_loss_percent", "N/A")
-            }
-            for pos in positions
-        ]
-        
+    logger.info(f"get_positions - user: {user_id}, platform: {platform}")
+    
+    # Validate platform
+    validate_platform(platform)
+    
+    # Get user's trading client using factory
+    client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
+    account_to_use = account_id or db_account_number
+    
+    # Fetch positions
+    positions = client.get_positions(account_to_use)
+    
+    if not positions:
         return json.dumps({
             "status": "success",
-            "message": f"Retrieved {len(formatted_positions)} positions",
-            "platform": platform,
-            "positions": formatted_positions
+            "message": "No positions found",
+            "positions": []
         }, indent=2)
-        
-    except TradingPlatformError as e:
-        return json.dumps({"status": "error", "message": str(e)}, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to get positions: {e}", exc_info=True)
-        return json.dumps({"status": "error", "message": str(e)}, indent=2)
-    finally:
-        # Always close the database session
-        db.close()
+    
+    # Format positions
+    formatted_positions = [
+        {
+            "symbol": pos.get("symbol", "N/A"),
+            "description": pos.get("description", "N/A"),
+            "quantity": pos.get("quantity", "N/A"),
+            "cost_basis": pos.get("cost_basis", "N/A"),
+            "last_price": pos.get("last_price", "N/A"),
+            "market_value": pos.get("market_value", "N/A"),
+            "gain_loss": pos.get("gain_loss", "N/A"),
+            "gain_loss_percent": pos.get("gain_loss_percent", "N/A")
+        }
+        for pos in positions
+    ]
+    
+    return json.dumps({
+        "status": "success",
+        "message": f"Retrieved {len(formatted_positions)} positions",
+        "platform": platform,
+        "positions": formatted_positions
+    }, indent=2)
 
+@handle_trading_error
 @mcp.tool()
 async def get_quote(
     ctx: Context,
@@ -228,25 +160,23 @@ async def get_quote(
     """
     user_id, db = get_user_context_from_ctx(ctx)
 
-    try:
-        logger.info(f"get_quote - symbol: {symbol}, user: {user_id}")
+    logger.info(f"get_quote - symbol: {symbol}, user: {user_id}")
 
-        client, _ = get_trading_client_for_user(user_id, platform, db)
-        quote = client.get_quote(symbol)
+    # Validate inputs
+    validate_symbol(symbol)
+    validate_platform(platform)
 
-        return json.dumps({
-            "status": "success",
-            "message": f"Quote retrieved for {symbol}",
-            "platform": platform,
-            "quote": quote
-        }, indent=2)
+    client, _ = TradingClientFactory.create_client_for_user(user_id, platform, db)
+    quote = client.get_quote(symbol)
 
-    except Exception as e:
-        logger.error(f"Failed to get quote: {e}", exc_info=True)
-        return json.dumps({"status": "error", "message": str(e)}, indent=2)
-    finally:
-        db.close()
+    return json.dumps({
+        "status": "success",
+        "message": f"Quote retrieved for {symbol}",
+        "platform": platform,
+        "quote": quote
+    }, indent=2)
 
+@handle_trading_error
 @mcp.tool()
 async def place_multileg_order(
     ctx: Context,
@@ -291,83 +221,49 @@ async def place_multileg_order(
     """
     user_id, db = get_user_context_from_ctx(ctx)
 
+    logger.info(f"place_multileg_order - user: {user_id}, symbol: {symbol}, preview: {preview}")
+
+    # Validate inputs
+    validate_symbol(symbol)
+    validate_platform(platform)
+
+    # Parse and validate legs
     try:
-        logger.info(f"=== MCP TOOL CALLED ===")
-        logger.info(f"place_multileg_order - user: {user_id}, symbol: {symbol}, preview: {preview}")
-        logger.info(f"price parameter: {price} (type: {type(price)})")
-        logger.info(f"order_type: {order_type}, duration: {duration}")
-        logger.info(f"platform: {platform}")
-        logger.info(f"legs parameter: {legs} (type: {type(legs)})")
-
-        # Validate
-        if not symbol:
-            raise TradingPlatformError("Symbol is required")
-
-        # Parse legs
         legs_data = json.loads(legs)
         if not isinstance(legs_data, list) or len(legs_data) == 0:
-            raise TradingPlatformError("Legs must be a non-empty array")
+            raise TradingError("Legs must be a non-empty array", ErrorCode.INVALID_INPUT)
+    except json.JSONDecodeError:
+        raise TradingError("Invalid JSON format for legs", ErrorCode.INVALID_FORMAT)
 
-        # Get client
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+    # Get client using factory
+    client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
+    account_to_use = account_id or db_account_number
 
-        # Convert price from string to float if provided
-        logger.info(f"=== PRICE CONVERSION ===")
-        logger.info(f"Original price: {price} (type: {type(price)})")
-        price_float = None
-        if price is not None:
-            try:
-                price_float = float(price)
-                logger.info(f"Converted price to float: {price_float} (type: {type(price_float)})")
-            except (ValueError, TypeError) as e:
-                logger.error(f"Price conversion failed: {e}")
-                raise TradingPlatformError(f"Invalid price format: {price}. Must be a valid number.")
-        else:
-            logger.info("Price is None, keeping as None")
+    # Convert and validate price
+    price_float = None
+    if price is not None:
+        price_float = validate_price(price)
 
-        # Place order
-        logger.info(f"=== CALLING CLIENT ===")
-        logger.info(f"Calling client.place_multileg_order with:")
-        logger.info(f"  account_id: {account_to_use}")
-        logger.info(f"  symbol: {symbol}")
-        logger.info(f"  legs: {legs_data}")
-        logger.info(f"  order_type: {order_type}")
-        logger.info(f"  duration: {duration}")
-        logger.info(f"  preview: {preview}")
-        logger.info(f"  price: {price_float} (type: {type(price_float)})")
-        
-        response = client.place_multileg_order(
-            account_id=account_to_use,
-            symbol=symbol,
-            legs=legs_data,
-            order_type=order_type,
-            duration=duration,
-            session=session,
-            preview=preview,
-            price=price_float,
-        )
-        
-        logger.info(f"=== CLIENT RESPONSE ===")
-        logger.info(f"Response type: {type(response)}")
-        logger.info(f"Response: {response}")
+    # Place order
+    response = client.place_multileg_order(
+        account_id=account_to_use,
+        symbol=symbol,
+        legs=legs_data,
+        order_type=order_type,
+        duration=duration,
+        session=session,
+        preview=preview,
+        price=price_float,
+    )
 
-        return json.dumps({
-            "status": "success",
-            "message": f"Order {'previewed' if preview else 'placed'} successfully",
-            "platform": platform,
-            "response": response
-        }, indent=2)
+    return json.dumps({
+        "status": "success",
+        "message": f"Order {'previewed' if preview else 'placed'} successfully",
+        "platform": platform,
+        "response": response
+    }, indent=2)
 
-    except Exception as e:
-        logger.error(f"=== EXCEPTION CAUGHT ===")
-        logger.error(f"Exception type: {type(e)}")
-        logger.error(f"Exception message: {str(e)}")
-        logger.error(f"Full traceback:", exc_info=True)
-        return json.dumps({"status": "error", "message": str(e)}, indent=2)
-    finally:
-        db.close()
-
+@handle_trading_error
 @mcp.tool()
 async def get_balance(
     ctx: Context,
@@ -388,7 +284,7 @@ async def get_balance(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
+        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         balance = client.get_balance(account_to_use)
@@ -406,6 +302,7 @@ async def get_balance(
     finally:
         db.close()
 
+@handle_trading_error
 @mcp.tool()
 async def view_orders(
     ctx: Context,
@@ -428,7 +325,7 @@ async def view_orders(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
+        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         orders = client.get_orders(account_id=account_to_use, include_filled=include_filled)
@@ -476,9 +373,9 @@ async def cancel_order(
 
     try:
         if not order_id:
-            raise TradingPlatformError("Order ID is required")
+            raise TradingError("Order ID is required")
 
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
+        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         response = client.cancel_order(account_id=account_to_use, order_id=order_id)
@@ -522,7 +419,7 @@ async def get_account_history(
     user_id, db = get_user_context_from_ctx(ctx)
     
     try:
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
+        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
         
         history = client.get_account_history(
@@ -610,7 +507,7 @@ async def get_account_info(
     logger.info(f"get_account_info - user: {user_id}, platform: {platform}")
 
     try:
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
+        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         account_info = client.get_account_info(account_to_use)
@@ -668,20 +565,20 @@ async def change_order(
 
     try:
         if not order_id:
-            raise TradingPlatformError("Order ID is required to change an order")
+            raise TradingError("Order ID is required to change an order")
 
         # Validate that at least one parameter is being changed
         if all(param is None for param in [order_type, price, stop, duration, quantity]):
-            raise TradingPlatformError("At least one order parameter must be provided for modification")
+            raise TradingError("At least one order parameter must be provided for modification")
 
         # Validate order type and price dependencies
         if order_type in ['limit', 'stop_limit'] and price is None:
-            raise TradingPlatformError(f"Price is required for {order_type} orders")
+            raise TradingError(f"Price is required for {order_type} orders")
 
         if order_type in ['stop', 'stop_limit'] and stop is None:
-            raise TradingPlatformError(f"Stop price is required for {order_type} orders")
+            raise TradingError(f"Stop price is required for {order_type} orders")
 
-        client, db_account_number = get_trading_client_for_user(user_id, platform, db)
+        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
         account_to_use = account_id or db_account_number
 
         # Change the order
@@ -720,7 +617,7 @@ async def change_order(
             "response": response
         }, indent=2)
 
-    except TradingPlatformError as e:
+    except TradingError as e:
         return json.dumps({
             "status": "error",
             "message": f"Trading platform error: {str(e)}",

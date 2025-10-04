@@ -18,6 +18,7 @@ from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Form, Response
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 import bcrypt
@@ -33,6 +34,9 @@ logger = logging.getLogger("oauth_server")
 
 # Rate limiter configuration
 limiter = Limiter(key_func=get_remote_address)
+
+# Template configuration
+templates = Jinja2Templates(directory="templates")
 
 # Password hashing functions using bcrypt directly (Python 3.13 compatible)
 def hash_password(password: str) -> str:
@@ -107,13 +111,14 @@ async def protected_resource_metadata():
 # USER REGISTRATION & CREDENTIAL MANAGEMENT
 # ============================================================================
 
-@router.get("/setup", response_class=HTMLResponse)
+@router.get("/setup")
 async def setup_form(request: Request):
     """Credential submission form for users to register their trading platform credentials."""
     # Check if user is authenticated via OAuth
     auth_header = request.headers.get("Authorization")
     user_email = None
     is_authenticated = False
+    active_sessions = []
 
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
@@ -121,305 +126,45 @@ async def setup_form(request: Request):
             payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
             user_id = payload["sub"]
             is_authenticated = True
-            # Get user email from database
+            # Get user email and active sessions from database
             from database import get_db
             db = next(get_db())
             try:
                 user = db.query(User).filter(User.user_id == user_id).first()
                 if user:
                     user_email = user.email
+                    
+                # Get active sessions for this user
+                from database import OAuthToken
+                from datetime import datetime, timezone
+                current_time = datetime.now(timezone.utc)
+                
+                sessions = db.query(OAuthToken).filter(
+                    OAuthToken.user_id == user_id,
+                    OAuthToken.revoked == False,
+                    OAuthToken.expires_at > current_time
+                ).all()
+                
+                active_sessions = [
+                    {
+                        "token_id": str(session.id) if hasattr(session, 'id') else session.token_hash[:8],
+                        "client_id": session.client_id,
+                        "created_at": session.created_at.isoformat(),
+                        "expires_at": session.expires_at.isoformat()
+                    }
+                    for session in sessions
+                ]
             finally:
                 db.close()
         except Exception:
             pass  # Not authenticated, show full form
 
-    email_field = f'<input type="email" id="email" name="email" value="{user_email}" required readonly>' if user_email else '<input type="email" id="email" name="email" required>'
-    
-    # Show session management if authenticated
-    session_management_style = 'style="display: block;"' if is_authenticated else 'class="hidden"'
-    password_section = '' if user_email else '''
-            <div class="form-group">
-                <label for="password">Password:</label>
-                <input type="password" id="password" name="password" required minlength="8">
-            </div>
-    '''
-
-    return HTMLResponse(f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>MCP Trading - Setup Credentials</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
-            h1 {{ color: #333; }}
-            .form-group {{ margin: 20px 0; }}
-            label {{ display: block; margin-bottom: 5px; font-weight: bold; }}
-            input, select {{ width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }}
-            button {{ background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }}
-            button:hover {{ background: #0056b3; }}
-            .warning {{ background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 4px; margin: 20px 0; }}
-            .hidden {{ display: none; }}
-        </style>
-    </head>
-    <body>
-        <h1>🔐 MCP Trading Server - Setup</h1>
-
-        <div class="warning">
-            <strong>⚠️ Security Notice:</strong> Your credentials will be encrypted and stored securely.
-            This page must only be accessed over HTTPS in production.
-        </div>
-
-        <form method="post" action="/setup" id="setupForm">
-            <div class="form-group">
-                <label for="email">Email:</label>
-                {email_field}
-            </div>
-
-            {password_section}
-
-            <h2>Trading Platform Credentials</h2>
-
-            <div class="form-group">
-                <label for="platform">Platform:</label>
-                <select id="platform" name="platform" required onchange="togglePlatformFields()">
-                    <option value="">-- Select Platform --</option>
-                    <option value="tradier">Tradier (Production)</option>
-                    <option value="tradier_paper">Tradier (Paper Trading)</option>
-                    <option value="schwab">Schwab</option>
-                </select>
-            </div>
-
-            <!-- Tradier-specific fields -->
-            <div id="tradier-fields" class="hidden">
-                <div class="form-group">
-                    <label for="access_token">Access Token:</label>
-                    <input type="text" id="access_token" name="access_token"
-                           placeholder="Your Tradier API access token">
-                </div>
-
-                <div class="form-group">
-                    <label for="account_number">Account Number:</label>
-                    <input type="text" id="account_number" name="account_number"
-                           placeholder="Your Tradier account number">
-                </div>
-
-                <button type="submit">Register Credentials</button>
-            </div>
-
-            <!-- Schwab-specific fields -->
-            <div id="schwab-fields" class="hidden">
-                <div class="warning">
-                    <strong>ℹ️ Schwab OAuth:</strong> You'll be redirected to Schwab to authorize access.
-                    Make sure SCHWAB_APP_KEY and SCHWAB_APP_SECRET are set in environment variables.
-                </div>
-                <button type="button" onclick="initiateSchwabOAuth()">Connect to Schwab</button>
-            </div>
-        </form>
-
-        <!-- Session Management Section (only shown if authenticated) -->
-        <div id="session-management" {session_management_style}>
-            <h2>🔒 Session Management</h2>
-            <div class="warning">
-                <strong>ℹ️ Session Security:</strong> Manage your active sessions and revoke access when needed.
-            </div>
-            
-            <div class="form-group">
-                <button type="button" onclick="loadSessions()">🔄 Refresh Sessions</button>
-                <button type="button" onclick="revokeCurrentSession()" style="background: #dc3545;">🚪 Revoke Current Session</button>
-                <button type="button" onclick="revokeAllSessions()" style="background: #dc3545;">🚫 Revoke All Sessions</button>
-            </div>
-            
-            <div id="sessions-list">
-                <p>Click "Refresh Sessions" to view your active sessions.</p>
-            </div>
-        </div>
-
-        <script>
-            function togglePlatformFields() {{
-                const platform = document.getElementById('platform').value;
-                const tradierFields = document.getElementById('tradier-fields');
-                const schwabFields = document.getElementById('schwab-fields');
-                const accessToken = document.getElementById('access_token');
-                const accountNumber = document.getElementById('account_number');
-
-                if (platform === 'tradier' || platform === 'tradier_paper') {{
-                    tradierFields.classList.remove('hidden');
-                    schwabFields.classList.add('hidden');
-                    accessToken.required = true;
-                    accountNumber.required = true;
-                }} else if (platform === 'schwab') {{
-                    tradierFields.classList.add('hidden');
-                    schwabFields.classList.remove('hidden');
-                    accessToken.required = false;
-                    accountNumber.required = false;
-                }} else {{
-                    tradierFields.classList.add('hidden');
-                    schwabFields.classList.add('hidden');
-                    accessToken.required = false;
-                    accountNumber.required = false;
-                }}
-            }}
-
-            function initiateSchwabOAuth() {{
-                const email = document.getElementById('email').value;
-                const password = document.getElementById('password')?.value || '';
-
-                if (!email) {{
-                    alert('Please fill in email before connecting to Schwab');
-                    return;
-                }}
-
-                // Store form data in URL params for OAuth callback
-                const params = new URLSearchParams({{
-                    email: email,
-                    password: password,
-                    environment: 'production'  // Schwab is always production
-                }});
-
-                window.location.href = `/setup/schwab/initiate?${{params.toString()}}`;
-            }}
-
-            // Session Management Functions
-            function loadSessions() {{
-                // Get auth header from the current request (passed from server)
-                const authHeader = '{auth_header if is_authenticated else ""}';
-                if (!authHeader) {{
-                    alert('No authentication token found. Please log in first.');
-                    return;
-                }}
-
-                fetch('/setup/sessions', {{
-                    method: 'GET',
-                    headers: {{
-                        'Authorization': authHeader,
-                        'Content-Type': 'application/json'
-                    }}
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.status === 'success') {{
-                        displaySessions(data);
-                    }} else {{
-                        alert('Failed to load sessions: ' + data.error);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error loading sessions:', error);
-                    alert('Error loading sessions: ' + error.message);
-                }});
-            }}
-
-            function displaySessions(data) {{
-                const sessionsList = document.getElementById('sessions-list');
-                const sessions = data.sessions;
-                const active_count = data.active_count;
-                const expired_count = data.expired_count;
-                
-                let html = `<h3>Active Sessions (${{active_count}} active, ${{expired_count}} expired)</h3>`;
-                
-                if (sessions.length === 0) {{
-                    html += '<p>No sessions found.</p>';
-                }} else {{
-                    html += '<div style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin: 10px 0;">';
-                    
-                    sessions.forEach(session => {{
-                        const status = session.is_expired ? '❌ Expired' : '✅ Active';
-                        const createdDate = new Date(session.created_at).toLocaleString();
-                        const expiresDate = session.expires_at ? new Date(session.expires_at).toLocaleString() : 'Never';
-                        
-                        html += `
-                            <div style="border-bottom: 1px solid #eee; padding: 8px 0;">
-                                <strong>${{status}}</strong> - ${{session.client_id}}<br>
-                                <small>Created: ${{createdDate}} | Expires: ${{expiresDate}}</small>
-                            </div>
-                        `;
-                    }});
-                    
-                    html += '</div>';
-                }}
-                
-                sessionsList.innerHTML = html;
-            }}
-
-            function revokeCurrentSession() {{
-                if (!confirm('Are you sure you want to revoke your current session? You will be logged out immediately.')) {{
-                    return;
-                }}
-
-                const authHeader = '{auth_header if is_authenticated else ""}';
-                if (!authHeader) {{
-                    alert('No authentication token found.');
-                    return;
-                }}
-
-                fetch('/setup/revoke-current', {{
-                    method: 'POST',
-                    headers: {{
-                        'Authorization': authHeader,
-                        'Content-Type': 'application/json'
-                    }}
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.status === 'success') {{
-                        alert('Current session revoked successfully. You will be redirected to login.');
-                        localStorage.removeItem('auth_token');
-                        window.location.href = '/setup';
-                    }} else {{
-                        alert('Failed to revoke session: ' + data.error);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error revoking session:', error);
-                    alert('Error revoking session: ' + error.message);
-                }});
-            }}
-
-            function revokeAllSessions() {{
-                if (!confirm('Are you sure you want to revoke ALL your sessions? You will be logged out from all devices immediately.')) {{
-                    return;
-                }}
-
-                const authHeader = '{auth_header if is_authenticated else ""}';
-                if (!authHeader) {{
-                    alert('No authentication token found.');
-                    return;
-                }}
-
-                fetch('/setup/revoke-all', {{
-                    method: 'POST',
-                    headers: {{
-                        'Authorization': authHeader,
-                        'Content-Type': 'application/json'
-                    }}
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.status === 'success') {{
-                        alert(`Successfully revoked ${{data.revoked_count}} sessions. You will be redirected to login.`);
-                        localStorage.removeItem('auth_token');
-                        window.location.href = '/setup';
-                    }} else {{
-                        alert('Failed to revoke sessions: ' + data.error);
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error revoking sessions:', error);
-                    alert('Error revoking sessions: ' + error.message);
-                }});
-            }}
-
-            // Show session management if user is authenticated
-            document.addEventListener('DOMContentLoaded', function() {{
-                const authHeader = '{auth_header if is_authenticated else ""}';
-                if (authHeader) {{
-                    document.getElementById('session-management').classList.remove('hidden');
-                }}
-            }});
-        </script>
-    </body>
-    </html>
-    """)
+    return templates.TemplateResponse("setup.html", {
+        "request": request,
+        "user_email": user_email,
+        "is_authenticated": is_authenticated,
+        "active_sessions": active_sessions
+    })
 
 @router.post("/setup")
 async def setup_credentials(

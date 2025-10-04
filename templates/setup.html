@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MCP Trading Server - Setup</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: #555;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .hidden {
+            display: none;
+        }
+        .alert {
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .alert-success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .alert-info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .platform-tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #ddd;
+        }
+        .platform-tab {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            background: none;
+            border: none;
+            font-size: 14px;
+        }
+        .platform-tab.active {
+            border-bottom-color: #007bff;
+            color: #007bff;
+            font-weight: 500;
+        }
+        .platform-section {
+            display: none;
+        }
+        .platform-section.active {
+            display: block;
+        }
+        .session-management {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .session-management h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .session-list {
+            margin: 10px 0;
+        }
+        .session-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .session-item:last-child {
+            border-bottom: none;
+        }
+        .session-info {
+            font-size: 14px;
+        }
+        .session-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 12px;
+            width: auto;
+            margin: 0;
+        }
+        .btn-danger {
+            background-color: #dc3545;
+        }
+        .btn-danger:hover {
+            background-color: #c82333;
+        }
+        .btn-warning {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        .btn-warning:hover {
+            background-color: #e0a800;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 MCP Trading Server Setup</h1>
+        
+        {% if message %}
+        <div class="alert alert-{{ 'success' if message_type == 'success' else 'info' }}">
+            {{ message }}
+        </div>
+        {% endif %}
+
+        {% if is_authenticated %}
+        <div class="session-management" style="display: block;">
+            <h3>🔑 Active Sessions</h3>
+            <p>You are currently authenticated. Manage your trading platform credentials below.</p>
+            
+            {% if active_sessions %}
+            <div class="session-list">
+                {% for session in active_sessions %}
+                <div class="session-item">
+                    <div class="session-info">
+                        <strong>{{ session.client_id }}</strong><br>
+                        <small>Created: {{ session.created_at }}</small>
+                    </div>
+                    <div class="session-actions">
+                        <button type="button" class="btn-small btn-warning" onclick="revokeSession('{{ session.token_id }}')">Revoke</button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            
+            <button type="button" class="btn-danger btn-small" onclick="revokeAllSessions()">Revoke All Sessions</button>
+        </div>
+        {% endif %}
+
+        <form method="post" action="/setup">
+            <div class="platform-tabs">
+                <button type="button" class="platform-tab active" onclick="showPlatform('tradier')">Tradier</button>
+                <button type="button" class="platform-tab" onclick="showPlatform('schwab')">Schwab</button>
+            </div>
+
+            <div class="platform-section active" id="tradier-section">
+                <div class="form-group">
+                    <label for="platform">Environment:</label>
+                    <select id="platform" name="platform" required>
+                        <option value="tradier_paper">Paper Trading (Sandbox)</option>
+                        <option value="tradier">Production Trading</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="access_token">Access Token:</label>
+                    <input type="password" id="access_token" name="access_token" required placeholder="Your Tradier API access token">
+                </div>
+
+                <div class="form-group">
+                    <label for="account_number">Account Number:</label>
+                    <input type="text" id="account_number" name="account_number" required placeholder="Your Tradier account number">
+                </div>
+            </div>
+
+            <div class="platform-section hidden" id="schwab-section">
+                <div class="form-group">
+                    <label for="schwab_platform">Environment:</label>
+                    <select id="schwab_platform" name="platform" disabled>
+                        <option value="schwab">Schwab Production</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="schwab_app_key">App Key:</label>
+                    <input type="text" id="schwab_app_key" name="schwab_app_key" placeholder="Your Schwab API App Key" disabled>
+                </div>
+
+                <div class="form-group">
+                    <label for="schwab_app_secret">App Secret:</label>
+                    <input type="password" id="schwab_app_secret" name="schwab_app_secret" placeholder="Your Schwab API App Secret" disabled>
+                </div>
+
+                <div class="form-group">
+                    <label for="schwab_account_hash">Account Hash:</label>
+                    <input type="text" id="schwab_account_hash" name="schwab_account_hash" placeholder="Your Schwab Account Hash" disabled>
+                </div>
+
+                <div class="alert alert-info">
+                    <strong>Note:</strong> Schwab integration requires OAuth flow. Please contact support for setup assistance.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="email">Email:</label>
+                <input type="email" id="email" name="email" value="{{ user_email or '' }}" required {{ 'readonly' if user_email else '' }}>
+            </div>
+
+            {% if not user_email %}
+            <div class="form-group">
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password" required minlength="8">
+            </div>
+            {% endif %}
+
+            <button type="submit">Save Trading Credentials</button>
+        </form>
+    </div>
+
+    <script>
+        function showPlatform(platform) {
+            // Hide all platform sections
+            document.querySelectorAll('.platform-section').forEach(section => {
+                section.classList.remove('active');
+                section.classList.add('hidden');
+            });
+            
+            // Remove active class from all tabs
+            document.querySelectorAll('.platform-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected platform section
+            document.getElementById(platform + '-section').classList.add('active');
+            document.getElementById(platform + '-section').classList.remove('hidden');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+
+        function revokeSession(tokenId) {
+            if (confirm('Are you sure you want to revoke this session?')) {
+                fetch('/revoke-session', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ token_id: tokenId })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        location.reload();
+                    } else {
+                        alert('Failed to revoke session: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('Error revoking session: ' + error);
+                });
+            }
+        }
+
+        function revokeAllSessions() {
+            if (confirm('Are you sure you want to revoke ALL sessions? This will log you out everywhere.')) {
+                fetch('/revoke-all-sessions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        location.reload();
+                    } else {
+                        alert('Failed to revoke sessions: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('Error revoking sessions: ' + error);
+                });
+            }
+        }
+    </script>
+</body>
+</html>
