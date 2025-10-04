@@ -289,6 +289,23 @@ async def get_balance(
 
         balance = client.get_balance(account_to_use)
 
+        # Check if Schwab returned an authorization error
+        if platform == "schwab" and isinstance(balance, dict):
+            raw_response = balance.get("raw_response", {})
+            if isinstance(raw_response, dict) and "errors" in raw_response:
+                errors = raw_response["errors"]
+                if errors and len(errors) > 0:
+                    error = errors[0]
+                    if error.get("status") == 401:
+                        logger.warning(f"Schwab 401 error for user {user_id}: {error.get('detail', 'Unknown error')}")
+                        return json.dumps({
+                            "status": "error",
+                            "message": "Schwab authentication failed - token may be expired",
+                            "platform": platform,
+                            "error_details": error,
+                            "recommendation": "Use check_schwab_credentials to verify token status, then use initiate_schwab_oauth to refresh if needed"
+                        }, indent=2)
+
         return json.dumps({
             "status": "success",
             "message": "Balance retrieved successfully",
@@ -883,6 +900,187 @@ async def list_active_sessions(ctx: Context) -> str:
         return json.dumps({
             "status": "error",
             "message": f"Failed to list active sessions: {str(e)}"
+        }, indent=2)
+    finally:
+        db.close()
+
+@mcp.tool()
+async def check_schwab_credentials(ctx: Context) -> str:
+    """
+    Check the status of your Schwab credentials and token expiration.
+    
+    Args:
+        ctx: FastMCP Context (automatically injected)
+    
+    Returns:
+        JSON string containing credential status information
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    
+    logger.info(f"check_schwab_credentials - user: {user_id}")
+    
+    try:
+        from auth_utils import get_user_trading_credentials
+        from datetime import datetime, timezone
+        
+        # Get user's Schwab credentials
+        try:
+            access_token, account_number, refresh_token, account_hash, token_expires_at = get_user_trading_credentials(user_id, "schwab", db)
+            
+            # Check token expiration
+            current_time = datetime.now(timezone.utc)
+            if token_expires_at:
+                expires_at = token_expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                
+                is_expired = expires_at < current_time
+                time_until_expiry = expires_at - current_time
+            else:
+                is_expired = True
+                time_until_expiry = None
+            
+            return json.dumps({
+                "status": "success",
+                "message": "Schwab credentials found",
+                "user_id": user_id,
+                "credentials_status": {
+                    "has_access_token": bool(access_token),
+                    "has_refresh_token": bool(refresh_token),
+                    "has_account_hash": bool(account_hash),
+                    "account_number": account_number,
+                    "token_expires_at": token_expires_at.isoformat() if token_expires_at else None,
+                    "is_expired": is_expired,
+                    "time_until_expiry": str(time_until_expiry) if time_until_expiry else None,
+                    "needs_refresh": is_expired
+                },
+                "recommendation": "Use initiate_schwab_oauth to refresh credentials" if is_expired else "Credentials are valid"
+            }, indent=2)
+            
+        except ValueError as e:
+            return json.dumps({
+                "status": "error",
+                "message": "No Schwab credentials found",
+                "user_id": user_id,
+                "error": str(e),
+                "recommendation": "Use initiate_schwab_oauth to set up Schwab credentials"
+            }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Failed to check Schwab credentials: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to check Schwab credentials: {str(e)}"
+        }, indent=2)
+    finally:
+        db.close()
+
+@mcp.tool()
+async def initiate_schwab_oauth(ctx: Context, email: str, environment: str = "production", password: Optional[str] = None) -> str:
+    """
+    Initiate Schwab OAuth authentication flow for credential setup.
+    
+    This tool generates a Schwab OAuth authorization URL that you can visit to connect your Schwab account.
+    The flow uses PKCE for security and stores temporary state in the database.
+    
+    Args:
+        ctx: FastMCP Context (automatically injected)
+        email: Your email address (used for account creation/login)
+        environment: Schwab environment ('production' or 'sandbox') - default: 'production'
+        password: Optional password for new account creation (if not provided, will use existing account)
+    
+    Returns:
+        JSON string containing the Schwab authorization URL and instructions
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    
+    logger.info(f"initiate_schwab_oauth - user: {user_id}, email: {email}, environment: {environment}")
+    
+    try:
+        import os
+        import secrets
+        import hashlib
+        from urllib.parse import urlencode
+        from datetime import datetime, timedelta, timezone
+        
+        # Validate environment
+        if environment not in ["production", "sandbox"]:
+            return json.dumps({
+                "status": "error",
+                "message": "Environment must be 'production' or 'sandbox'"
+            }, indent=2)
+        
+        # Check if Schwab environment variables are configured
+        app_key = os.getenv("SCHWAB_APP_KEY")
+        app_secret = os.getenv("SCHWAB_APP_SECRET")
+        callback_url = os.getenv("SCHWAB_CALLBACK_URL")
+        
+        if not app_key or not app_secret:
+            return json.dumps({
+                "status": "error",
+                "message": "Server misconfigured: SCHWAB_APP_KEY and SCHWAB_APP_SECRET must be set in environment variables"
+            }, indent=2)
+        
+        if not callback_url:
+            # Default to SERVER_URL + /setup/schwab/callback
+            server_url = os.getenv("SERVER_URL", "http://localhost:8000")
+            callback_url = f"{server_url}/setup/schwab/callback"
+        
+        # Generate OAuth state and PKCE code verifier
+        state = secrets.token_urlsafe(32)
+        code_verifier = secrets.token_urlsafe(32)
+        
+        # Calculate code challenge (SHA256 of verifier)
+        code_challenge = hashlib.sha256(code_verifier.encode()).digest()
+        code_challenge_b64 = code_challenge.hex()
+        
+        # Store state in database for callback verification
+        from database import SchwabOAuthState
+        oauth_state = SchwabOAuthState(
+            state=state,
+            email=email,
+            password=password,
+            code_verifier=code_verifier,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
+        )
+        db.add(oauth_state)
+        db.commit()
+        
+        # Build Schwab authorization URL
+        auth_params = {
+            "response_type": "code",
+            "client_id": app_key,
+            "redirect_uri": callback_url,
+            "state": state,
+            "code_challenge": code_challenge_b64,
+            "code_challenge_method": "S256"
+        }
+        
+        auth_url = f"https://api.schwabapi.com/v1/oauth/authorize?{urlencode(auth_params)}"
+        
+        logger.info(f"Generated Schwab OAuth URL for user {user_id}")
+        
+        return json.dumps({
+            "status": "success",
+            "message": "Schwab OAuth authorization URL generated successfully",
+            "authorization_url": auth_url,
+            "instructions": {
+                "step_1": "Click the authorization_url above to open Schwab's authorization page",
+                "step_2": "Log in to your Schwab account and authorize the application",
+                "step_3": "You'll be redirected back to the server where your credentials will be stored",
+                "step_4": "The authorization code will be automatically exchanged for access tokens",
+                "step_5": "Your Schwab account will be connected and ready for trading"
+            },
+            "expires_in_minutes": 10,
+            "environment": environment,
+            "callback_url": callback_url
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Failed to initiate Schwab OAuth: {e}", exc_info=True)
+        return json.dumps({
+            "status": "error",
+            "message": f"Failed to initiate Schwab OAuth: {str(e)}"
         }, indent=2)
     finally:
         db.close()

@@ -483,7 +483,6 @@ async def schwab_oauth_initiate(
         state=state,
         email=email,
         password=password,
-        environment=environment,
         code_verifier=code_verifier,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
@@ -559,7 +558,6 @@ async def schwab_oauth_callback(
         logger.info(f"callback_url: {callback_url}")
         logger.info(f"code: {code}")
         logger.info(f"code_verifier: {oauth_state.code_verifier}")
-        logger.info(f"environment: {oauth_state.environment}")
 
         # Exchange authorization code for tokens via HTTP request
         import httpx
@@ -675,7 +673,6 @@ async def schwab_oauth_callback(
         store_user_trading_credentials(
             user_id=str(user.user_id),
             platform="schwab",
-            environment=oauth_state.environment,
             access_token=access_token,
             account_number=account_number,
             db=db,
@@ -706,7 +703,7 @@ async def schwab_oauth_callback(
         <body>
             <div class="success">
                 <h2>✅ Schwab Credentials Registered Successfully!</h2>
-                <p>Your Schwab credentials for {oauth_state.environment} have been encrypted and stored.</p>
+                <p>Your Schwab credentials have been encrypted and stored.</p>
             </div>
 
             <div class="info">

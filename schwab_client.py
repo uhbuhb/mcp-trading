@@ -70,14 +70,22 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Token dictionary in the format expected by schwab-py
         """
-        # Calculate token age in seconds
-        token_age = 0
+        # Calculate when the token was created (assuming 30 minute lifetime)
+        current_time = datetime.now(timezone.utc)
+        
+        # If we have expiration time, calculate creation time from that
         if self.token_expires_at:
-            current_time = datetime.now(timezone.utc)
             expires_at = self.token_expires_at
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
-            token_age = int((current_time - expires_at).total_seconds())
+            
+            # Token lifetime is typically 30 minutes (1800 seconds)
+            token_lifetime = 1800
+            creation_time = expires_at - timedelta(seconds=token_lifetime)
+            creation_timestamp = int(creation_time.timestamp())
+        else:
+            # If no expiration time, assume token was created recently
+            creation_timestamp = int(current_time.timestamp())
         
         # Return token in the format expected by schwab-py
         return {
@@ -88,7 +96,7 @@ class SchwabClient(TradingPlatformInterface):
                 "expires_in": 1800,  # 30 minutes default
                 "scope": "trading"
             },
-            "creation_timestamp": int(datetime.now(timezone.utc).timestamp()) - token_age
+            "creation_timestamp": creation_timestamp
         }
 
     def _write_token(self, token: Dict[str, Any], *args, **kwargs) -> None:

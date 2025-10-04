@@ -217,29 +217,25 @@
 
             <div class="platform-section hidden" id="schwab-section">
                 <div class="form-group">
-                    <label for="schwab_platform">Environment:</label>
-                    <select id="schwab_platform" name="platform" disabled>
-                        <option value="schwab">Schwab Production</option>
+                    <label for="schwab_environment">Environment:</label>
+                    <select id="schwab_environment" name="schwab_environment">
+                        <option value="production">Production</option>
+                        <option value="sandbox">Sandbox</option>
                     </select>
                 </div>
 
                 <div class="form-group">
-                    <label for="schwab_app_key">App Key:</label>
-                    <input type="text" id="schwab_app_key" name="schwab_app_key" placeholder="Your Schwab API App Key" disabled>
-                </div>
-
-                <div class="form-group">
-                    <label for="schwab_app_secret">App Secret:</label>
-                    <input type="password" id="schwab_app_secret" name="schwab_app_secret" placeholder="Your Schwab API App Secret" disabled>
-                </div>
-
-                <div class="form-group">
-                    <label for="schwab_account_hash">Account Hash:</label>
-                    <input type="text" id="schwab_account_hash" name="schwab_account_hash" placeholder="Your Schwab Account Hash" disabled>
+                    <label for="schwab_password">Password:</label>
+                    <input type="password" id="schwab_password" name="schwab_password" placeholder="Password for account creation/login" required>
+                    <small class="form-text">Required for account creation or to verify existing account</small>
                 </div>
 
                 <div class="alert alert-info">
-                    <strong>Note:</strong> Schwab integration requires OAuth flow. Please contact support for setup assistance.
+                    <strong>Schwab OAuth Setup:</strong> Click "Connect to Schwab" to start the OAuth authorization flow.
+                </div>
+
+                <div class="form-group">
+                    <button type="button" class="btn-primary" onclick="connectToSchwab()">Connect to Schwab</button>
                 </div>
             </div>
 
@@ -323,6 +319,34 @@
                     alert('Error revoking sessions: ' + error);
                 });
             }
+        }
+
+        function connectToSchwab() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('schwab_password').value;
+            const environment = document.getElementById('schwab_environment').value;
+
+            if (!email) {
+                alert('Please enter your email address');
+                return;
+            }
+
+            if (!password) {
+                alert('Please enter a password for account creation/login');
+                return;
+            }
+
+            // Build the Schwab OAuth initiate URL
+            const params = new URLSearchParams({
+                email: email,
+                environment: environment,
+                password: password
+            });
+
+            const schwabUrl = `/setup/schwab/initiate?${params.toString()}`;
+            
+            // Redirect to Schwab OAuth flow
+            window.location.href = schwabUrl;
         }
     </script>
 </body>
