@@ -82,16 +82,16 @@ def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
 @mcp.tool()
 async def get_positions(
     ctx: Context,
-    account_id: Optional[str] = None,
-    platform: str = "tradier"
+    platform: str,
+    account_id: Optional[str] = None
 ) -> str:
     """
     Get current trading positions from trading account.
     
     Args:
         ctx: FastMCP Context (automatically injected, contains user_id and db)
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
         account_id: Optional account ID override
-        platform: Trading platform to use (default: 'tradier')
     
     Returns:
         JSON string containing position information
@@ -145,7 +145,7 @@ async def get_positions(
 async def get_quote(
     ctx: Context,
     symbol: str,
-    platform: str = "tradier"
+    platform: str
 ) -> str:
     """
     Get quote information for a stock symbol.
@@ -153,7 +153,7 @@ async def get_quote(
     Args:
         ctx: FastMCP Context (automatically injected)
         symbol: Stock symbol (e.g., 'AAPL', 'MSFT')
-        platform: Trading platform to use (default: 'tradier')
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
     
     Returns:
         JSON string containing quote information
@@ -267,16 +267,16 @@ async def place_multileg_order(
 @mcp.tool()
 async def get_balance(
     ctx: Context,
-    account_id: Optional[str] = None,
-    platform: str = "tradier"
+    platform: str,
+    account_id: Optional[str] = None
 ) -> str:
     """
     Get account balance information.
     
     Args:
         ctx: FastMCP Context (automatically injected)
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
         account_id: Optional account ID override
-        platform: Trading platform (default: 'tradier')
     
     Returns:
         JSON string containing balance information
@@ -306,8 +306,8 @@ async def get_balance(
 @mcp.tool()
 async def view_orders(
     ctx: Context,
+    platform: str,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
     include_filled: bool = True
 ) -> str:
     """
@@ -315,8 +315,8 @@ async def view_orders(
     
     Args:
         ctx: FastMCP Context (automatically injected)
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
         account_id: Optional account ID override
-        platform: Trading platform (default: 'tradier')
         include_filled: Include filled orders (default: True)
     
     Returns:
@@ -354,8 +354,8 @@ async def view_orders(
 async def cancel_order(
     ctx: Context,
     order_id: str,
-    account_id: Optional[str] = None,
-    platform: str = "tradier"
+    platform: str,
+    account_id: Optional[str] = None
 ) -> str:
     """
     Cancel an existing order.
@@ -363,8 +363,8 @@ async def cancel_order(
     Args:
         ctx: FastMCP Context (automatically injected)
         order_id: Order ID to cancel
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
         account_id: Optional account ID override
-        platform: Trading platform (default: 'tradier')
     
     Returns:
         JSON string containing cancellation response
@@ -396,8 +396,8 @@ async def cancel_order(
 @mcp.tool()
 async def get_account_history(
     ctx: Context,
+    platform: str,
     account_id: Optional[str] = None,
-    platform: str = "tradier",
     limit: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
@@ -407,8 +407,8 @@ async def get_account_history(
     
     Args:
         ctx: FastMCP Context (automatically injected)
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
         account_id: Optional account ID override
-        platform: Trading platform (default: 'tradier')
         limit: Number of records to return
         start_date: Start date (YYYY-MM-DD format)
         end_date: End date (YYYY-MM-DD format)
@@ -443,13 +443,13 @@ async def get_account_history(
         db.close()
 
 @mcp.tool()
-async def get_account_status(ctx: Context, platform: str = "tradier") -> str:
+async def get_account_status(ctx: Context, platform: str) -> str:
     """
     Get the current account configuration status for the authenticated user.
 
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Trading platform (default: 'tradier')
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
 
     Returns:
         JSON string containing account status information
@@ -488,16 +488,16 @@ async def get_account_status(ctx: Context, platform: str = "tradier") -> str:
 @mcp.tool()
 async def get_account_info(
     ctx: Context,
-    account_id: Optional[str] = None,
-    platform: str = "tradier"
+    platform: str,
+    account_id: Optional[str] = None
 ) -> str:
     """
     Get account information from trading platform.
 
     Args:
         ctx: FastMCP Context (automatically injected)
+        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
         account_id: Optional account ID override
-        platform: Trading platform (default: 'tradier')
 
     Returns:
         JSON string containing account information
