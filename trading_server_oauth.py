@@ -861,7 +861,7 @@ async def list_active_sessions(ctx: Context) -> str:
                 "expires_at": token.expires_at.isoformat() if token.expires_at else None,
                 "is_expired": is_expired,
                 "scope": token.scope,
-                "token_id": token.id  # Internal ID for reference
+                "token_hash": token.token_hash  # Primary key for reference
             }
             sessions.append(session_info)
         
