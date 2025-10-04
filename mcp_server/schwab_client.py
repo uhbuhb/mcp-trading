@@ -135,11 +135,37 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Account information dictionary
         """
+        from mcp_server.error_handling import TradingError, ErrorCode
+        
         account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Use schwab-py client high-level method to get account info
             response = self.schwab_client.get_account(account_to_use)
+            
+            # Check for HTTP error status codes
+            if response.status_code >= 400:
+                data = response.json()
+                
+                if response.status_code == 401:
+                    raise TradingError(
+                        "Schwab authentication failed - token may be expired",
+                        ErrorCode.TOKEN_EXPIRED,
+                        details={"status_code": 401, "response": data}
+                    )
+                elif response.status_code == 403:
+                    raise TradingError(
+                        "Insufficient permissions for this Schwab account",
+                        ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        details={"status_code": 403, "response": data}
+                    )
+                else:
+                    raise TradingError(
+                        f"Schwab API error: HTTP {response.status_code}",
+                        ErrorCode.TRADING_PLATFORM_ERROR,
+                        details={"status_code": response.status_code, "response": data}
+                    )
+            
             data = response.json()
 
             if 'securitiesAccount' in data:
@@ -153,16 +179,20 @@ class SchwabClient(TradingPlatformInterface):
                     'round_trips': account.get('roundTrips', 0)
                 }
             else:
-                # Return raw data for debugging when expected structure not found
-                logger.warning("Expected 'securitiesAccount' not found in response, returning raw data")
-                return {
-                    'raw_response': data,
-                    'message': 'Expected securitiesAccount structure not found in response'
-                }
+                # This should not happen with a successful response, but handle gracefully
+                logger.warning("Expected 'securitiesAccount' not found in successful response")
+                return {}
 
+        except TradingError:
+            # Re-raise trading errors as-is
+            raise
         except Exception as e:
             logger.error(f"Failed to get account info: {e}")
-            raise
+            raise TradingError(
+                f"Failed to get account info from Schwab: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
 
     def get_account_number(self) -> str:
         """
@@ -183,11 +213,38 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             List of position dictionaries
         """
+        from mcp_server.error_handling import TradingError, ErrorCode
+        
         account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Use schwab-py client high-level method to get account with positions
             response = self.schwab_client.get_account(account_to_use, fields=BaseClient.Account.Fields.POSITIONS)
+            
+            # Check for HTTP error status codes
+            if response.status_code >= 400:
+                data = response.json()
+                error_message = f"HTTP {response.status_code}"
+                error_details = data
+                
+                if response.status_code == 401:
+                    raise TradingError(
+                        "Schwab authentication failed - token may be expired",
+                        ErrorCode.TOKEN_EXPIRED,
+                        details={"status_code": 401, "response": data}
+                    )
+                elif response.status_code == 403:
+                    raise TradingError(
+                        "Insufficient permissions for this Schwab account",
+                        ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        details={"status_code": 403, "response": data}
+                    )
+                else:
+                    raise TradingError(
+                        f"Schwab API error: {error_message}",
+                        ErrorCode.TRADING_PLATFORM_ERROR,
+                        details={"status_code": response.status_code, "response": data}
+                    )
             
             data = response.json()
 
@@ -211,16 +268,20 @@ class SchwabClient(TradingPlatformInterface):
 
                 return formatted_positions
             else:
-                # Return raw data for debugging when expected structure not found
-                logger.warning("Expected 'securitiesAccount' or 'positions' not found in response, returning raw data")
-                return [{
-                    'raw_response': data,
-                    'message': 'Expected securitiesAccount.positions structure not found in response'
-                }]
+                # This should not happen with a successful response, but handle gracefully
+                logger.warning("Expected 'securitiesAccount' or 'positions' not found in successful response")
+                return []
 
+        except TradingError:
+            # Re-raise trading errors as-is
+            raise
         except Exception as e:
             logger.error(f"Failed to get positions: {e}")
-            raise
+            raise TradingError(
+                f"Failed to get positions from Schwab: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
 
     def get_quote(self, symbol: str) -> Dict[str, Any]:
         """
@@ -272,11 +333,37 @@ class SchwabClient(TradingPlatformInterface):
         Returns:
             Balance information dictionary
         """
+        from mcp_server.error_handling import TradingError, ErrorCode
+        
         account_to_use = self._resolve_account_id(account_id)
 
         try:
             # Use schwab-py client high-level method to get account balance
             response = self.schwab_client.get_account(account_to_use)
+            
+            # Check for HTTP error status codes
+            if response.status_code >= 400:
+                data = response.json()
+                
+                if response.status_code == 401:
+                    raise TradingError(
+                        "Schwab authentication failed - token may be expired",
+                        ErrorCode.TOKEN_EXPIRED,
+                        details={"status_code": 401, "response": data}
+                    )
+                elif response.status_code == 403:
+                    raise TradingError(
+                        "Insufficient permissions for this Schwab account",
+                        ErrorCode.INSUFFICIENT_PERMISSIONS,
+                        details={"status_code": 403, "response": data}
+                    )
+                else:
+                    raise TradingError(
+                        f"Schwab API error: HTTP {response.status_code}",
+                        ErrorCode.TRADING_PLATFORM_ERROR,
+                        details={"status_code": response.status_code, "response": data}
+                    )
+            
             data = response.json()
 
             if 'securitiesAccount' in data:
@@ -295,16 +382,20 @@ class SchwabClient(TradingPlatformInterface):
                     'pending_deposits': float(balances.get('pendingDeposits', 0)),
                 }
             else:
-                # Return raw data for debugging when expected structure not found
-                logger.warning("Expected 'securitiesAccount' not found in response, returning raw data")
-                return {
-                    'raw_response': data,
-                    'message': 'Expected securitiesAccount structure not found in response'
-                }
+                # This should not happen with a successful response, but handle gracefully
+                logger.warning("Expected 'securitiesAccount' not found in successful response")
+                return {}
 
+        except TradingError:
+            # Re-raise trading errors as-is
+            raise
         except Exception as e:
             logger.error(f"Failed to get balance: {e}")
-            raise
+            raise TradingError(
+                f"Failed to get balance from Schwab: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
 
     def get_orders(self, account_id: Optional[str] = None, include_filled: bool = True) -> List[Dict[str, Any]]:
         """

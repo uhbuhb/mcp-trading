@@ -289,23 +289,6 @@ async def get_balance(
 
         balance = client.get_balance(account_to_use)
 
-        # Check if Schwab returned an authorization error
-        if platform == "schwab" and isinstance(balance, dict):
-            raw_response = balance.get("raw_response", {})
-            if isinstance(raw_response, dict) and "errors" in raw_response:
-                errors = raw_response["errors"]
-                if errors and len(errors) > 0:
-                    error = errors[0]
-                    if error.get("status") == 401:
-                        logger.warning(f"Schwab 401 error for user {user_id}: {error.get('detail', 'Unknown error')}")
-                        return json.dumps({
-                            "status": "error",
-                            "message": "Schwab authentication failed - token may be expired",
-                            "platform": platform,
-                            "error_details": error,
-                            "recommendation": "Use check_schwab_credentials to verify token status, then use initiate_schwab_oauth to refresh if needed"
-                        }, indent=2)
-
         return json.dumps({
             "status": "success",
             "message": "Balance retrieved successfully",
