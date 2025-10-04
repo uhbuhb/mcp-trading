@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from database import get_db, OAuthCode, OAuthToken
+from shared.database import get_db, OAuthCode, OAuthToken
 
 logger = logging.getLogger("cleanup_job")
 

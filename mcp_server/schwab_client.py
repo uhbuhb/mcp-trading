@@ -13,8 +13,8 @@ from schwab.orders.generic import OrderBuilder
 from schwab.orders.common import OrderType, Duration, Session, OrderStrategyType
 from schwab.orders.common import OptionInstruction
 from schwab.client.base import BaseClient
-from trading_platform_interface import TradingPlatformInterface
-from option_symbol_utils import convert_occ_to_schwab_format
+from mcp_server.trading_platform_interface import TradingPlatformInterface
+from mcp_server.option_symbol_utils import convert_occ_to_schwab_format
 
 logger = logging.getLogger("schwab_client")
 

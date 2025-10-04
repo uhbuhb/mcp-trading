@@ -8,11 +8,11 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 
-from tradier_client import TradierClient
-from schwab_client import SchwabClient
-from trading_platform_interface import TradingPlatformInterface
-from auth_utils import get_user_trading_credentials
-from error_handling import TradingError, ErrorCode, validate_platform
+from mcp_server.tradier_client import TradierClient
+from mcp_server.schwab_client import SchwabClient
+from mcp_server.trading_platform_interface import TradingPlatformInterface
+from auth.auth_utils import get_user_trading_credentials
+from mcp_server.error_handling import TradingError, ErrorCode, validate_platform
 
 logger = logging.getLogger("trading_client_factory")
 

@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from typing import Tuple, Optional
 from sqlalchemy.orm import Session
 
-from database import User, UserCredential
-from encryption import get_encryption_service
+from shared.database import User, UserCredential
+from shared.encryption import get_encryption_service
 
 logger = logging.getLogger("auth_utils")
 

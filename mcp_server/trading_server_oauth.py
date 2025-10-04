@@ -14,11 +14,11 @@ from typing import Optional, Any
 from mcp.server.fastmcp import FastMCP, Context
 from sqlalchemy.orm import Session
 
-from trading_platform_interface import TradingPlatformInterface
-from trading_client_factory import TradingClientFactory
-from error_handling import handle_trading_error, TradingError, ErrorCode, validate_platform, validate_symbol, validate_price
-from request_context import get_user_id
-from auth_utils import get_user_trading_credentials
+from mcp_server.trading_platform_interface import TradingPlatformInterface
+from mcp_server.trading_client_factory import TradingClientFactory
+from mcp_server.error_handling import handle_trading_error, TradingError, ErrorCode, validate_platform, validate_symbol, validate_price
+from shared.request_context import get_user_id
+from auth.auth_utils import get_user_trading_credentials
 
 # Configure logging
 logging.basicConfig(
@@ -59,13 +59,13 @@ def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
         ValueError: If not authenticated
     """
     # Get user_id from context (set by middleware)
-    from request_context import get_user_id
+    from shared.request_context import get_user_id
     user_id = get_user_id()  # Raises ValueError if not authenticated
 
     # Create a fresh database session for this tool call
-    from database import SessionLocal
+    from shared.database import SessionLocal
     if SessionLocal is None:
-        from database import init_session_local
+        from shared.database import init_session_local
         init_session_local()
 
     db = SessionLocal()
@@ -731,7 +731,7 @@ async def revoke_current_token(ctx: Context) -> str:
         token_hash = hashlib.sha256(current_token.encode()).hexdigest()
         
         # Find and revoke the token
-        from database import OAuthToken
+        from shared.database import OAuthToken
         oauth_token = db.query(OAuthToken).filter(
             OAuthToken.token_hash == token_hash,
             OAuthToken.revoked == False
@@ -781,7 +781,7 @@ async def revoke_all_tokens(ctx: Context, platform: Optional[str] = None) -> str
     user_id, db = get_user_context_from_ctx(ctx)
     
     try:
-        from database import OAuthToken
+        from shared.database import OAuthToken
         
         # Build query for active tokens
         query = db.query(OAuthToken).filter(
@@ -846,7 +846,7 @@ async def list_active_sessions(ctx: Context) -> str:
     user_id, db = get_user_context_from_ctx(ctx)
     
     try:
-        from database import OAuthToken
+        from shared.database import OAuthToken
         from datetime import datetime, timezone
         
         # Get all active tokens for the user
@@ -920,7 +920,7 @@ async def check_schwab_credentials(ctx: Context) -> str:
     logger.info(f"check_schwab_credentials - user: {user_id}")
     
     try:
-        from auth_utils import get_user_trading_credentials
+        from auth.auth_utils import get_user_trading_credentials
         from datetime import datetime, timezone
         
         # Get user's Schwab credentials
@@ -1035,7 +1035,7 @@ async def initiate_schwab_oauth(ctx: Context, email: str, environment: str = "pr
         code_challenge_b64 = code_challenge.hex()
         
         # Store state in database for callback verification
-        from database import SchwabOAuthState
+        from shared.database import SchwabOAuthState
         oauth_state = SchwabOAuthState(
             state=state,
             email=email,

@@ -28,9 +28,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Mount
 from sqlalchemy.orm import Session
 
-from database import init_database, get_db
-from oauth_server import router as oauth_router, get_current_user_id, SERVER_URL, MCP_ENDPOINT, verify_access_token
-from trading_server_oauth import mcp as trading_mcp
+from shared.database import init_database, get_db
+from auth.oauth_server import router as oauth_router, get_current_user_id, SERVER_URL, MCP_ENDPOINT, verify_access_token
+from mcp_server.trading_server_oauth import mcp as trading_mcp
 
 # Configure logging
 logging.basicConfig(
@@ -87,15 +87,15 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                 user_id = payload["sub"]
                 
                 # Create a direct database session for middleware use
-                from database import SessionLocal
+                from shared.database import SessionLocal
                 if SessionLocal is None:
-                    from database import init_session_local
+                    from shared.database import init_session_local
                     init_session_local()
                 
                 db = SessionLocal()
                 try:
                     # SECURITY: Verify user still exists in database
-                    from database import User
+                    from shared.database import User
                     user = db.query(User).filter(User.user_id == user_id).first()
                     if not user:
                         logger.warning(f"❌ Token references non-existent user: {user_id}")
@@ -112,7 +112,7 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                     
                     # Store user_id and token in context-local storage for tools to access
                     # Tools will create their own database sessions
-                    from request_context import set_user_id
+                    from shared.request_context import set_user_id
                     set_user_id(user_id, token)
 
                     logger.info(f"✅ Token validated for user: {user_id}")
@@ -123,7 +123,7 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
 
                 finally:
                     # Clean up context and close database session
-                    from request_context import clear_user_id
+                    from shared.request_context import clear_user_id
                     clear_user_id()
                     db.close()
                 
@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize encryption service
     try:
-        from encryption import get_encryption_service
+        from shared.encryption import get_encryption_service
         get_encryption_service()
         logger.info("✅ Encryption service initialized")
     except Exception as e:
@@ -179,7 +179,7 @@ async def lifespan(app: FastAPI):
 
     # Start cleanup job for expired tokens/codes
     import asyncio
-    from cleanup_job import cleanup_loop
+    from shared.cleanup_job import cleanup_loop
     cleanup_stop_event = asyncio.Event()
     cleanup_task = asyncio.create_task(cleanup_loop(cleanup_stop_event))
     logger.info("✅ OAuth cleanup job started")
@@ -217,7 +217,7 @@ app.add_middleware(
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from oauth_server import limiter
+from auth.oauth_server import limiter
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
