@@ -268,20 +268,9 @@ app.router.routes.append(Mount("/mcp/", app=mcp_app))
 
 @app.get("/")
 async def root():
-    """Root endpoint with server information."""
-    return JSONResponse({
-        "name": "MCP Trading Server",
-        "version": "0.1.0",
-        "description": "OAuth 2.1 secured trading server implementing Model Context Protocol",
-        "endpoints": {
-            "oauth_metadata": "/.well-known/oauth-authorization-server",
-            "resource_metadata": "/.well-known/oauth-protected-resource",
-            "setup": "/setup",
-            "mcp": "/mcp/",
-            "health": "/mcp/health"
-        },
-        "documentation": "/docs"
-    })
+    """Root endpoint - redirect to login page."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/login", status_code=302)
 
 # ============================================================================
 # DEVELOPMENT HELPERS

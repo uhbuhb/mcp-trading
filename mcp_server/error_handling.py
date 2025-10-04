@@ -112,6 +112,16 @@ class ResponseFormatter:
         
         if details:
             error_response["details"] = details
+        
+        # Add server information for credential-related errors
+        if code in [ErrorCode.INVALID_CREDENTIALS.value, ErrorCode.AUTHENTICATION_REQUIRED.value]:
+            import os
+            server_url = os.getenv("SERVER_URL", "http://localhost:8000")
+            error_response["server_info"] = {
+                "login_url": f"{server_url}/login",
+                "setup_url": f"{server_url}/setup",
+                "instruction": f"Visit {server_url}/login to set up your trading credentials"
+            }
             
         return json.dumps(error_response, indent=2)
 

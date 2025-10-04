@@ -53,6 +53,31 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     hashed_bytes = hashed_password.encode('utf-8')
     return bcrypt.checkpw(password_bytes, hashed_bytes)
 
+# Session management functions
+def create_session_token(user_id) -> str:
+    """Create a JWT session token for web authentication."""
+    expire = datetime.now(timezone.utc) + timedelta(hours=24)  # 24 hour session
+    to_encode = {
+        "sub": str(user_id),  # Convert UUID to string
+        "exp": expire,
+        "type": "session",  # Distinguish from OAuth tokens
+        "aud": SERVER_URL  # Web session audience
+    }
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def verify_session_token(token: str) -> Optional[str]:
+    """Verify a session token and return user_id if valid."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], audience=SERVER_URL)
+        if payload.get("type") != "session":
+            return None
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        return user_id
+    except JWTError:
+        return None
+
 # JWT configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
 ALGORITHM = "HS256"
@@ -108,134 +133,322 @@ async def protected_resource_metadata():
     })
 
 # ============================================================================
+# SIMPLE LOGIN/REGISTER ENDPOINTS
+# ============================================================================
+
+@router.get("/login")
+async def login_form(request: Request):
+    """Simple login form for users to authenticate before setup."""
+    # Check if user is already authenticated via session cookie
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        user_id = verify_session_token(session_token)
+        if user_id:
+            # User is already authenticated, redirect to setup
+            return RedirectResponse(url="/setup", status_code=302)
+    
+    # User is not authenticated, show login form
+    return templates.TemplateResponse("login.html", {
+        "request": request
+    })
+
+@router.post("/login")
+@limiter.limit("10/minute")
+async def login_user(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Authenticate user and redirect to setup page."""
+    logger.info(f"Login attempt for {email}")
+    
+    # Find user by email
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user or not verify_password(password, user.password_hash):
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Invalid email or password"
+        })
+    
+    # Create secure session token
+    session_token = create_session_token(user.user_id)
+    
+    # Create response with redirect
+    response = RedirectResponse(url="/setup", status_code=302)
+    
+    # Set secure HTTP-only cookie
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,  # Prevent XSS attacks
+        secure=True,    # HTTPS only in production
+        samesite="lax", # CSRF protection
+        max_age=86400   # 24 hours
+    )
+    
+    logger.info(f"User {user.user_id} logged in successfully")
+    return response
+
+@router.get("/register")
+async def register_form(request: Request):
+    """Show registration form."""
+    return templates.TemplateResponse("register.html", {
+        "request": request
+    })
+
+@router.post("/register")
+@limiter.limit("5/minute")
+async def register_user(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Register new user and redirect to setup page."""
+    logger.info(f"Registration attempt for {email}")
+    
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        return templates.TemplateResponse("register.html", {
+            "request": request,
+            "error": "User with this email already exists. Please login instead."
+        })
+    
+    # Create new user
+    password_hash = hash_password(password)
+    user = User(email=email, password_hash=password_hash)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    logger.info(f"Created new user: {user.user_id}")
+    
+    # Create secure session token
+    session_token = create_session_token(user.user_id)
+    
+    # Create response with redirect
+    response = RedirectResponse(url="/setup", status_code=302)
+    
+    # Set secure HTTP-only cookie
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,  # Prevent XSS attacks
+        secure=True,    # HTTPS only in production
+        samesite="lax", # CSRF protection
+        max_age=86400   # 24 hours
+    )
+    
+    return response
+
+@router.post("/logout")
+async def logout_user(request: Request):
+    """Logout user by clearing session cookie."""
+    response = RedirectResponse(url="/login", status_code=302)
+    
+    # Clear the session cookie
+    response.delete_cookie(
+        key="session_token",
+        httponly=True,
+        secure=True,
+        samesite="lax"
+    )
+    
+    logger.info("User logged out successfully")
+    return response
+
+@router.post("/revoke-session")
+async def revoke_session(request: Request, db: Session = Depends(get_db)):
+    """Revoke a specific session token."""
+    # Get user_id from session
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        return JSONResponse({"error": "No session found"}, status_code=401)
+    
+    user_id = verify_session_token(session_token)
+    if not user_id:
+        return JSONResponse({"error": "Invalid session"}, status_code=401)
+    
+    # For session-based auth, we just clear the current session cookie
+    # since we don't store session tokens in the database
+    response = JSONResponse({
+        "status": "success",
+        "message": "Session revoked successfully"
+    })
+    
+    # Clear the session cookie
+    response.delete_cookie(
+        key="session_token",
+        httponly=True,
+        secure=True,
+        samesite="lax"
+    )
+    
+    logger.info(f"Session revoked for user {user_id}")
+    return response
+
+@router.post("/revoke-all-sessions")
+async def revoke_all_sessions(request: Request, db: Session = Depends(get_db)):
+    """Revoke all sessions for the current user."""
+    # Get user_id from session
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        return JSONResponse({"error": "No session found"}, status_code=401)
+    
+    user_id = verify_session_token(session_token)
+    if not user_id:
+        return JSONResponse({"error": "Invalid session"}, status_code=401)
+    
+    # For session-based auth, we just clear the current session cookie
+    # since we don't store session tokens in the database
+    response = JSONResponse({
+        "status": "success",
+        "message": "All sessions revoked successfully"
+    })
+    
+    # Clear the session cookie
+    response.delete_cookie(
+        key="session_token",
+        httponly=True,
+        secure=True,
+        samesite="lax"
+    )
+    
+    logger.info(f"All sessions revoked for user {user_id}")
+    return response
+
+# ============================================================================
 # USER REGISTRATION & CREDENTIAL MANAGEMENT
 # ============================================================================
 
 @router.get("/setup")
 async def setup_form(request: Request):
     """Credential submission form for users to register their trading platform credentials."""
-    # Check if user is authenticated via OAuth
+    # Check if user is authenticated via OAuth or session cookie
     auth_header = request.headers.get("Authorization")
     user_email = None
     is_authenticated = False
     active_sessions = []
+    current_user = None
+    user_id = None
 
+    # Check for OAuth authentication first
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
             payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
             user_id = payload["sub"]
             is_authenticated = True
-            # Get user email and active sessions from database
-            from shared.database import get_db
-            db = next(get_db())
-            try:
-                user = db.query(User).filter(User.user_id == user_id).first()
-                if user:
-                    user_email = user.email
-                    
-                # Get active sessions for this user
-                from shared.database import OAuthToken
-                from datetime import datetime, timezone
-                current_time = datetime.now(timezone.utc)
-                
-                sessions = db.query(OAuthToken).filter(
-                    OAuthToken.user_id == user_id,
-                    OAuthToken.revoked == False,
-                    OAuthToken.expires_at > current_time
-                ).all()
-                
-                active_sessions = [
-                    {
-                        "token_id": str(session.id) if hasattr(session, 'id') else session.token_hash[:8],
-                        "client_id": session.client_id,
-                        "created_at": session.created_at.isoformat(),
-                        "expires_at": session.expires_at.isoformat()
-                    }
-                    for session in sessions
-                ]
-            finally:
-                db.close()
         except Exception:
-            pass  # Not authenticated, show full form
+            pass  # Not authenticated via OAuth
+    
+    # If not OAuth authenticated, check for session cookie
+    if not is_authenticated:
+        session_token = request.cookies.get("session_token")
+        if session_token:
+            user_id = verify_session_token(session_token)
+            if user_id:
+                is_authenticated = True
+    
+    # If still not authenticated, redirect to login
+    if not is_authenticated:
+        return RedirectResponse(url="/login", status_code=302)
+
+    # Get user email and active sessions from database
+    from shared.database import get_db
+    db = next(get_db())
+    try:
+        if not current_user:
+            current_user = db.query(User).filter(User.user_id == user_id).first()
+        
+        if current_user:
+            user_email = current_user.email
+            
+        # Get active sessions for this user
+        from shared.database import OAuthToken
+        from datetime import datetime, timezone
+        current_time = datetime.now(timezone.utc)
+        
+        sessions = db.query(OAuthToken).filter(
+            OAuthToken.user_id == user_id,
+            OAuthToken.revoked == False,
+            OAuthToken.expires_at > current_time
+        ).all()
+        
+        active_sessions = [
+            {
+                "token_id": str(session.id) if hasattr(session, 'id') else session.token_hash[:8],
+                "client_id": session.client_id,
+                "created_at": session.created_at.isoformat(),
+                "expires_at": session.expires_at.isoformat()
+            }
+            for session in sessions
+        ]
+    finally:
+        db.close()
 
     return templates.TemplateResponse("setup.html", {
         "request": request,
         "user_email": user_email,
         "is_authenticated": is_authenticated,
-        "active_sessions": active_sessions
+        "active_sessions": active_sessions,
+        "user_id": user_id
     })
 
 @router.post("/setup")
 async def setup_credentials(
     request: Request,
-    email: str = Form(...),
-    password: Optional[str] = Form(None),
     platform: str = Form(...),
     access_token: str = Form(...),
     account_number: str = Form(...),
     db: Session = Depends(get_db)
 ):
     """
-    Register user and encrypt their trading credentials.
+    Register trading credentials for authenticated user.
     
-    Two modes:
-    1. Authenticated (has OAuth token): Adds credentials to authenticated user
-    2. Unauthenticated: Creates new user with email/password
+    User must be authenticated via login or OAuth before reaching this endpoint.
     
     Security:
-    - Passwords are hashed with bcrypt
     - Trading credentials are encrypted with Fernet
     - HTTPS required in production
     """
-    logger.info(f"Setting up credentials for {email} on {platform}")
-    
-    # Validate platform
-    if platform not in ["tradier", "tradier_paper", "schwab"]:
-        raise HTTPException(400, "Unsupported platform")
-    
-    # Check if user is authenticated via OAuth
+    # Get user_id from authentication (OAuth or session)
     auth_header = request.headers.get("Authorization")
-    user = None
+    user_id = None
     
+    # Check for OAuth authentication first
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         try:
             payload = verify_access_token(token, expected_audience=MCP_ENDPOINT)
             user_id = payload["sub"]
-            # Get user from database
-            user = db.query(User).filter(User.user_id == user_id).first()
-            if user:
-                logger.info(f"Using authenticated user: {user.user_id} ({user.email})")
-                # Update email if it was set during OAuth without email
-                if not user.email or user.email != email:
-                    user.email = email
-                    db.commit()
-        except Exception as e:
-            logger.warning(f"OAuth token validation failed during setup: {e}")
-            # Fall through to email/password flow
+        except Exception:
+            pass  # Not authenticated via OAuth
     
-    # If not authenticated via OAuth, use email/password
-    if user is None:
-        if not password:
-            raise HTTPException(400, "Password required when not authenticated via OAuth")
-        
-        # Check if user exists
-        user = db.query(User).filter(User.email == email).first()
-        
-        if user is None:
-            # Create new user
-            password_hash = hash_password(password)
-            user = User(email=email, password_hash=password_hash)
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            logger.info(f"Created new user: {user.user_id}")
-        else:
-            # Verify password for existing user
-            if not verify_password(password, user.password_hash):
-                raise HTTPException(401, "Invalid credentials")
-            logger.info(f"User already exists: {user.user_id}")
+    # If not OAuth authenticated, check for session cookie
+    if not user_id:
+        session_token = request.cookies.get("session_token")
+        if session_token:
+            user_id = verify_session_token(session_token)
+    
+    if not user_id:
+        raise HTTPException(401, "Authentication required. Please login.")
+    
+    logger.info(f"Setting up credentials for user {user_id} on {platform}")
+    
+    # Validate platform
+    if platform not in ["tradier", "tradier_paper", "schwab"]:
+        raise HTTPException(400, "Unsupported platform")
+    
+    # Get authenticated user
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(401, "User not found. Please login again.")
+    
+    logger.info(f"Using authenticated user: {user.user_id} ({user.email})")
     
     # Store credentials using auth_utils
     from auth.auth_utils import store_user_trading_credentials
@@ -435,20 +648,35 @@ async def revoke_all_sessions(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/setup/schwab/initiate")
 async def schwab_oauth_initiate(
-    email: str,
-    environment: str,
-    password: Optional[str] = None,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
     Initiate Schwab OAuth flow for credential setup.
 
     This endpoint:
-    1. Validates environment variables (SCHWAB_APP_KEY, etc.)
-    2. Generates OAuth state and PKCE code verifier
-    3. Stores state in database for callback verification
-    4. Redirects user to Schwab authorization page
+    1. Gets user email from session
+    2. Validates environment variables (SCHWAB_APP_KEY, etc.)
+    3. Generates OAuth state and PKCE code verifier
+    4. Stores state in database for callback verification
+    5. Redirects user to Schwab authorization page
     """
+    # Get user email from session
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        raise HTTPException(401, "Authentication required. Please login first.")
+    
+    user_id = verify_session_token(session_token)
+    if not user_id:
+        raise HTTPException(401, "Invalid session. Please login again.")
+    
+    # Get user email from database
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user or not user.email:
+        raise HTTPException(400, "User email not found. Please contact support.")
+    
+    email = user.email
+    environment = "production"  # Always production
     logger.info(f"Initiating Schwab OAuth for {email} ({environment})")
 
     # Validate environment
@@ -482,7 +710,7 @@ async def schwab_oauth_initiate(
     oauth_state = SchwabOAuthState(
         state=state,
         email=email,
-        password=password,
+        password=None,  # No password needed since user is already authenticated
         code_verifier=code_verifier,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
@@ -645,26 +873,14 @@ async def schwab_oauth_callback(
         if not account_hash:
             raise HTTPException(500, "Account hash missing from Schwab response")
 
-        # Create or authenticate user
+        # Get the authenticated user (they're already logged in via session)
         user = db.query(User).filter(User.email == oauth_state.email).first()
 
         if user is None:
-            if not oauth_state.password:
-                raise HTTPException(400, "Password required for new user")
+            # This shouldn't happen since the user is already authenticated
+            raise HTTPException(400, "User not found. Please login again.")
 
-            # Create new user
-            password_hash = hash_password(oauth_state.password)
-            user = User(email=oauth_state.email, password_hash=password_hash)
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            logger.info(f"Created new user: {user.user_id}")
-        else:
-            if oauth_state.password:
-                # Verify password for existing user
-                if not verify_password(oauth_state.password, user.password_hash):
-                    raise HTTPException(401, "Invalid credentials")
-            logger.info(f"Using existing user: {user.user_id}")
+        logger.info(f"Using authenticated user: {user.user_id}")
 
         # Store credentials using auth_utils
         from auth.auth_utils import store_user_trading_credentials

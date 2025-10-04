@@ -10,8 +10,6 @@
             max-width: 600px;
             margin: 0 auto;
             padding: 20px;
-
-            
             background-color: #f5f5f5;
         }
         .container {
@@ -169,6 +167,12 @@
     <div class="container">
         <h1>🔐 MCP Trading Server Setup</h1>
         
+        <div style="text-align: right; margin-bottom: 20px;">
+            <form method="post" action="/logout" style="display: inline;">
+                <button type="submit" class="btn-small" style="background-color: #dc3545; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">Logout</button>
+            </form>
+        </div>
+        
         {% if message %}
         <div class="alert alert-{{ 'success' if message_type == 'success' else 'info' }}">
             {{ message }}
@@ -200,13 +204,17 @@
         </div>
         {% endif %}
 
-        <form method="post" action="/setup">
-            <div class="platform-tabs">
-                <button type="button" class="platform-tab active" onclick="showPlatform('tradier')">Tradier</button>
-                <button type="button" class="platform-tab" onclick="showPlatform('schwab')">Schwab</button>
+        <div class="platform-tabs">
+            <button type="button" class="platform-tab active" onclick="showPlatform('tradier')">Tradier</button>
+            <button type="button" class="platform-tab" onclick="showPlatform('schwab')">Schwab</button>
+        </div>
+
+        <div class="platform-section active" id="tradier-section">
+            <div class="alert alert-info">
+                <strong>Tradier Setup:</strong> Enter your Tradier API credentials below.
             </div>
 
-            <div class="platform-section active" id="tradier-section">
+            <form method="post" action="/setup">
                 <div class="form-group">
                     <label for="platform">Environment:</label>
                     <select id="platform" name="platform" required>
@@ -224,46 +232,20 @@
                     <label for="account_number">Account Number:</label>
                     <input type="text" id="account_number" name="account_number" required placeholder="Your Tradier account number">
                 </div>
-            </div>
 
-            <div class="platform-section hidden" id="schwab-section">
-                <div class="form-group">
-                    <label for="schwab_environment">Environment:</label>
-                    <select id="schwab_environment" name="schwab_environment">
-                        <option value="production">Production</option>
-                        <option value="sandbox">Sandbox</option>
-                    </select>
-                </div>
+                <button type="submit">Save Tradier Credentials</button>
+            </form>
+        </div>
 
-                <div class="form-group">
-                    <label for="schwab_password">Password:</label>
-                    <input type="password" id="schwab_password" name="schwab_password" placeholder="Password for account creation/login" required>
-                    <small class="form-text">Required for account creation or to verify existing account</small>
-                </div>
-
-                <div class="alert alert-info">
-                    <strong>Schwab OAuth Setup:</strong> Click "Connect to Schwab" to start the OAuth authorization flow.
-                </div>
-
-                <div class="form-group">
-                    <button type="button" class="btn-primary" onclick="connectToSchwab()">Connect to Schwab</button>
-                </div>
+        <div class="platform-section hidden" id="schwab-section">
+            <div class="alert alert-info">
+                <strong>Schwab OAuth Setup:</strong> Click "Connect to Schwab" to start the OAuth authorization flow.
             </div>
 
             <div class="form-group">
-                <label for="email">Email:</label>
-                <input type="email" id="email" name="email" value="{{ user_email or '' }}" required {{ 'readonly' if user_email else '' }}>
+                <button type="button" class="btn-primary" onclick="connectToSchwab()">Connect to Schwab</button>
             </div>
-
-            {% if not user_email %}
-            <div class="form-group">
-                <label for="password">Password:</label>
-                <input type="password" id="password" name="password" required minlength="8">
-            </div>
-            {% endif %}
-
-            <button type="submit">Save Trading Credentials</button>
-        </form>
+        </div>
     </div>
 
     <script>
@@ -333,28 +315,10 @@
         }
 
         function connectToSchwab() {
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('schwab_password').value;
-            const environment = document.getElementById('schwab_environment').value;
-
-            if (!email) {
-                alert('Please enter your email address');
-                return;
-            }
-
-            if (!password) {
-                alert('Please enter a password for account creation/login');
-                return;
-            }
-
             // Build the Schwab OAuth initiate URL
-            const params = new URLSearchParams({
-                email: email,
-                environment: environment,
-                password: password
-            });
-
-            const schwabUrl = `/setup/schwab/initiate?${params.toString()}`;
+            // The user info will be extracted from the session on the server side
+            // Environment is always production
+            const schwabUrl = `/setup/schwab/initiate`;
             
             // Redirect to Schwab OAuth flow
             window.location.href = schwabUrl;
