@@ -18,7 +18,7 @@ def get_user_trading_credentials(
     user_id: str,
     platform: str,
     db: Session
-) -> Tuple[str, str, Optional[str], Optional[str], Optional[datetime]]:
+) -> Tuple[str, str, Optional[str], Optional[str], Optional[datetime], Optional[str], Optional[str], Optional[str]]:
     """
     Retrieve and decrypt trading credentials for a user.
 
@@ -30,14 +30,17 @@ def get_user_trading_credentials(
 
     Args:
         user_id: User ID from OAuth token
-        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
+        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab', 'etrade', 'etrade_paper')
         db: Database session
 
     Returns:
-        Tuple of (access_token, account_number, refresh_token, account_hash, token_expires_at)
+        Tuple of (access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret)
         - refresh_token: Optional, for OAuth platforms like Schwab
         - account_hash: Optional, for platforms using hashes instead of numbers
         - token_expires_at: Optional, OAuth token expiration time
+        - consumer_key: Optional, for E*TRADE OAuth1 consumer key
+        - consumer_secret: Optional, for E*TRADE OAuth1 consumer secret
+        - access_token_secret: Optional, for E*TRADE OAuth1 access token secret
 
     Raises:
         ValueError: If credentials not found or decryption fails
@@ -74,10 +77,23 @@ def get_user_trading_credentials(
         if credential.encrypted_account_hash:
             account_hash = encryption_service.decrypt_credential(credential.encrypted_account_hash)
 
+        # Decrypt E*TRADE OAuth1 fields
+        consumer_key = None
+        if credential.encrypted_consumer_key:
+            consumer_key = encryption_service.decrypt_credential(credential.encrypted_consumer_key)
+
+        consumer_secret = None
+        if credential.encrypted_consumer_secret:
+            consumer_secret = encryption_service.decrypt_credential(credential.encrypted_consumer_secret)
+
+        access_token_secret = None
+        if credential.encrypted_access_token_secret:
+            access_token_secret = encryption_service.decrypt_credential(credential.encrypted_access_token_secret)
+
         token_expires_at = credential.token_expires_at
 
         logger.info(f"Successfully decrypted credentials for user {user_id}")
-        return access_token, account_number, refresh_token, account_hash, token_expires_at
+        return access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret
 
     except Exception as e:
         logger.error(f"Failed to decrypt credentials for user {user_id}: {e}")
@@ -91,20 +107,26 @@ def store_user_trading_credentials(
     db: Session,
     refresh_token: Optional[str] = None,
     account_hash: Optional[str] = None,
-    token_expires_at: Optional[datetime] = None
+    token_expires_at: Optional[datetime] = None,
+    consumer_key: Optional[str] = None,
+    consumer_secret: Optional[str] = None,
+    access_token_secret: Optional[str] = None
 ) -> None:
     """
     Encrypt and store trading credentials for a user.
 
     Args:
         user_id: User ID
-        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
+        platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab', 'etrade', 'etrade_paper')
         access_token: Plain text access token
         account_number: Plain text account number
         db: Database session
         refresh_token: Optional OAuth refresh token (for platforms like Schwab)
         account_hash: Optional account hash (for platforms using hashes)
         token_expires_at: Optional OAuth token expiration datetime
+        consumer_key: Optional E*TRADE consumer key
+        consumer_secret: Optional E*TRADE consumer secret
+        access_token_secret: Optional E*TRADE access token secret
     """
     logger.info(f"Storing credentials for user {user_id}, platform {platform}")
 
@@ -113,6 +135,12 @@ def store_user_trading_credentials(
     encrypted_token, encrypted_account = encryption_service.encrypt_credentials(
         access_token, account_number
     )
+    
+    # Handle None values (empty credentials for E*TRADE OAuth1 flow)
+    if encrypted_token is None:
+        encrypted_token = b''  # Store empty bytes for empty access token
+    if encrypted_account is None:
+        encrypted_account = b''  # Store empty bytes for empty account number
 
     # Encrypt optional fields
     encrypted_refresh = None
@@ -122,6 +150,27 @@ def store_user_trading_credentials(
     encrypted_hash = None
     if account_hash:
         encrypted_hash = encryption_service.encrypt_credential(account_hash)
+
+    # Encrypt E*TRADE OAuth1 fields
+    encrypted_consumer_key = None
+    if consumer_key:
+        encrypted_consumer_key = encryption_service.encrypt_credential(consumer_key)
+
+    encrypted_consumer_secret = None
+    if consumer_secret:
+        encrypted_consumer_secret = encryption_service.encrypt_credential(consumer_secret)
+
+    encrypted_access_token_secret = None
+    if access_token_secret:
+        encrypted_access_token_secret = encryption_service.encrypt_credential(access_token_secret)
+    
+    # Handle None values for E*TRADE OAuth1 fields
+    if encrypted_consumer_key is None:
+        encrypted_consumer_key = b''
+    if encrypted_consumer_secret is None:
+        encrypted_consumer_secret = b''
+    if encrypted_access_token_secret is None:
+        encrypted_access_token_secret = b''
 
     # Check if credentials already exist
     credential = db.query(UserCredential).filter(
@@ -135,6 +184,9 @@ def store_user_trading_credentials(
         credential.encrypted_account_number = encrypted_account
         credential.encrypted_refresh_token = encrypted_refresh
         credential.encrypted_account_hash = encrypted_hash
+        credential.encrypted_consumer_key = encrypted_consumer_key
+        credential.encrypted_consumer_secret = encrypted_consumer_secret
+        credential.encrypted_access_token_secret = encrypted_access_token_secret
         credential.token_expires_at = token_expires_at
         credential.updated_at = datetime.now(timezone.utc)
         logger.info(f"Updated credentials for user {user_id}")
@@ -147,6 +199,9 @@ def store_user_trading_credentials(
             encrypted_account_number=encrypted_account,
             encrypted_refresh_token=encrypted_refresh,
             encrypted_account_hash=encrypted_hash,
+            encrypted_consumer_key=encrypted_consumer_key,
+            encrypted_consumer_secret=encrypted_consumer_secret,
+            encrypted_access_token_secret=encrypted_access_token_secret,
             token_expires_at=token_expires_at
         )
         db.add(credential)

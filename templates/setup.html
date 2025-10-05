@@ -207,6 +207,7 @@
         <div class="platform-tabs">
             <button type="button" class="platform-tab active" onclick="showPlatform('tradier')">Tradier</button>
             <button type="button" class="platform-tab" onclick="showPlatform('schwab')">Schwab</button>
+            <button type="button" class="platform-tab" onclick="showPlatform('etrade')">E*TRADE</button>
         </div>
 
         <div class="platform-section active" id="tradier-section">
@@ -244,6 +245,38 @@
 
             <div class="form-group">
                 <button type="button" class="btn-primary" onclick="connectToSchwab()">Connect to Schwab</button>
+            </div>
+        </div>
+
+        <div class="platform-section hidden" id="etrade-section">
+            <div class="alert alert-info">
+                <strong>E*TRADE OAuth1 Setup:</strong> Enter your E*TRADE API credentials and click "Connect to E*TRADE" to start the OAuth authorization flow.
+            </div>
+
+            <form method="post" action="/setup">
+                <div class="form-group">
+                    <label for="etrade_platform">Environment:</label>
+                    <select id="etrade_platform" name="platform" required>
+                        <option value="etrade_paper">Paper Trading (Sandbox)</option>
+                        <option value="etrade">Production Trading</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="etrade_consumer_key">Consumer Key (API Key):</label>
+                    <input type="text" id="etrade_consumer_key" name="consumer_key" required placeholder="Your E*TRADE consumer key (API key)">
+                </div>
+
+                <div class="form-group">
+                    <label for="etrade_consumer_secret">Consumer Secret:</label>
+                    <input type="password" id="etrade_consumer_secret" name="consumer_secret" required placeholder="Your E*TRADE consumer secret">
+                </div>
+
+                <button type="submit">Save E*TRADE Consumer Credentials</button>
+            </form>
+
+            <div class="form-group" style="margin-top: 20px;">
+                <button type="button" class="btn-primary" onclick="connectToEtrade()">Connect to E*TRADE</button>
             </div>
         </div>
     </div>
@@ -322,6 +355,18 @@
             
             // Redirect to Schwab OAuth flow
             window.location.href = schwabUrl;
+        }
+
+        function connectToEtrade() {
+            // Get the selected platform from the form
+            const platformSelect = document.getElementById('etrade_platform');
+            const platform = platformSelect.value;
+            
+            // Build the E*TRADE OAuth1 initiate URL
+            const etradeUrl = `/setup/etrade/initiate?platform=${platform}`;
+            
+            // Redirect to E*TRADE OAuth1 flow
+            window.location.href = etradeUrl;
         }
     </script>
 </body>

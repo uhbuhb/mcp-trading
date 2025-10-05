@@ -56,7 +56,8 @@ class CredentialEncryption:
             Encrypted credential as bytes
         """
         if not credential:
-            raise ValueError("Cannot encrypt empty credential")
+            # Return None for empty credentials (used for E*TRADE OAuth1 flow)
+            return None
         
         try:
             encrypted = self.fernet.encrypt(credential.encode())
@@ -77,7 +78,8 @@ class CredentialEncryption:
             Decrypted credential string
         """
         if not encrypted_credential:
-            raise ValueError("Cannot decrypt empty credential")
+            # Return empty string for empty credentials (used for E*TRADE OAuth1 flow)
+            return ""
         
         try:
             decrypted = self.fernet.decrypt(encrypted_credential).decode()

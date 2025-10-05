@@ -402,8 +402,11 @@ async def setup_form(request: Request):
 async def setup_credentials(
     request: Request,
     platform: str = Form(...),
-    access_token: str = Form(...),
-    account_number: str = Form(...),
+    access_token: str = Form(None),
+    account_number: str = Form(None),
+    consumer_key: str = Form(None),
+    consumer_secret: str = Form(None),
+    access_token_secret: str = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -440,7 +443,7 @@ async def setup_credentials(
     logger.info(f"Setting up credentials for user {user_id} on {platform}")
     
     # Validate platform
-    if platform not in ["tradier", "tradier_paper", "schwab"]:
+    if platform not in ["tradier", "tradier_paper", "schwab", "etrade", "etrade_paper"]:
         raise HTTPException(400, "Unsupported platform")
     
     # Get authenticated user
@@ -452,45 +455,113 @@ async def setup_credentials(
     
     # Store credentials using auth_utils
     from auth.auth_utils import store_user_trading_credentials
-    store_user_trading_credentials(
-        user_id=str(user.user_id),
-        platform=platform,
-        access_token=access_token,
-        account_number=account_number,
-        db=db
-    )
     
-    return HTMLResponse(f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Setup Complete</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
-            .success {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; }}
-            .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
-            code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
-        </style>
-    </head>
-    <body>
-        <div class="success">
-            <h2>✅ Credentials Registered Successfully!</h2>
-            <p>Your {platform} credentials have been encrypted and stored.</p>
-        </div>
+    if platform in ["etrade", "etrade_paper"]:
+        # E*TRADE consumer credentials only (access tokens come from OAuth1 flow)
+        if not all([consumer_key, consumer_secret]):
+            raise HTTPException(400, "E*TRADE requires consumer_key and consumer_secret")
         
-        <div class="info">
-            <h3>Next Steps:</h3>
-            <ol>
-                <li>Your User ID: <code>{user.user_id}</code></li>
-                <li>You can now configure your MCP client to connect to this server</li>
-                <li>The client will handle OAuth authentication automatically</li>
-            </ol>
-        </div>
+        # Store only consumer credentials initially (access tokens will be added via OAuth1 flow)
+        store_user_trading_credentials(
+            user_id=str(user.user_id),
+            platform=platform,
+            access_token="",  # Will be set via OAuth1 flow
+            account_number="",  # E*TRADE doesn't use account_number in the same way
+            db=db,
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            access_token_secret=""  # Will be set via OAuth1 flow
+        )
+    else:
+        # Tradier/Schwab credentials (existing logic)
+        if not access_token or not account_number:
+            raise HTTPException(400, f"{platform} requires access_token and account_number")
         
-        <p><a href="/setup">Register another credential →</a></p>
-    </body>
-    </html>
-    """)
+        store_user_trading_credentials(
+            user_id=str(user.user_id),
+            platform=platform,
+            access_token=access_token,
+            account_number=account_number,
+            db=db
+        )
+    
+    if platform in ["etrade", "etrade_paper"]:
+        # E*TRADE consumer credentials saved - show next step
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>E*TRADE Consumer Credentials Saved</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                .success {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; }}
+                .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                .warning {{ background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
+                .btn {{ background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; text-decoration: none; display: inline-block; }}
+                .btn:hover {{ background: #0056b3; }}
+            </style>
+        </head>
+        <body>
+            <div class="success">
+                <h2>✅ E*TRADE Consumer Credentials Saved!</h2>
+                <p>Your E*TRADE {platform} consumer key and secret have been encrypted and stored.</p>
+            </div>
+            
+            <div class="warning">
+                <h3>⚠️ Next Step Required:</h3>
+                <p>You still need to complete the OAuth1 authorization flow to get your access tokens.</p>
+                <p><strong>Click "Connect to E*TRADE" on the setup page to continue.</strong></p>
+            </div>
+            
+            <div class="info">
+                <h3>What happens next:</h3>
+                <ol>
+                    <li>Click "Connect to E*TRADE" button</li>
+                    <li>You'll be redirected to E*TRADE's authorization page</li>
+                    <li>Log in to your E*TRADE account and authorize the app</li>
+                    <li>You'll be redirected back with access tokens</li>
+                    <li>Your E*TRADE integration will be complete!</li>
+                </ol>
+            </div>
+            
+            <p><a href="/setup" class="btn">← Back to Setup</a></p>
+        </body>
+        </html>
+        """)
+    else:
+        # Traditional success page for other platforms
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Setup Complete</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                .success {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; }}
+                .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
+            </style>
+        </head>
+        <body>
+            <div class="success">
+                <h2>✅ Credentials Registered Successfully!</h2>
+                <p>Your {platform} credentials have been encrypted and stored.</p>
+            </div>
+            
+            <div class="info">
+                <h3>Next Steps:</h3>
+                <ol>
+                    <li>Your User ID: <code>{user.user_id}</code></li>
+                    <li>You can now configure your MCP client to connect to this server</li>
+                    <li>The client will handle OAuth authentication automatically</li>
+                </ol>
+            </div>
+            
+            <p><a href="/setup">Register another credential →</a></p>
+        </body>
+        </html>
+        """)
 
 # ============================================================================
 # SESSION MANAGEMENT ENDPOINTS
@@ -950,6 +1021,450 @@ async def schwab_oauth_callback(
             pass
 
         raise HTTPException(500, f"Schwab OAuth failed: {str(e)}")
+
+# ============================================================================
+# E*TRADE OAUTH1 SETUP FLOW
+# ============================================================================
+
+@router.get("/setup/etrade/initiate")
+async def etrade_oauth_initiate(
+    request: Request,
+    platform: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Initiate E*TRADE OAuth1 flow for credential setup.
+
+    This endpoint:
+    1. Gets user email from session
+    2. Validates platform (etrade or etrade_paper)
+    3. Gets stored consumer credentials
+    4. Generates OAuth1 request token
+    5. Stores state in database for callback verification
+    6. Redirects user to E*TRADE authorization page
+    """
+    # Get user email from session
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        raise HTTPException(401, "Authentication required. Please login first.")
+    
+    user_id = verify_session_token(session_token)
+    if not user_id:
+        raise HTTPException(401, "Invalid session. Please login again.")
+    
+    # Get user email from database
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user or not user.email:
+        raise HTTPException(400, "User email not found. Please contact support.")
+    
+    email = user.email
+    logger.info(f"Initiating E*TRADE OAuth1 for {email} ({platform})")
+
+    # Validate platform
+    if platform not in ["etrade", "etrade_paper"]:
+        raise HTTPException(400, "Invalid platform. Must be 'etrade' or 'etrade_paper'")
+
+    # Get stored consumer credentials
+    from auth.auth_utils import get_user_trading_credentials
+    try:
+        access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret = get_user_trading_credentials(
+            str(user_id), platform, db
+        )
+        
+        if not consumer_key or not consumer_secret:
+            raise HTTPException(400, f"No consumer credentials found for {platform}. Please save your consumer key and secret first.")
+            
+    except ValueError as e:
+        raise HTTPException(400, f"No credentials found for {platform}. Please save your consumer key and secret first.")
+
+    # Determine base URL based on platform
+    base_url = "https://api.etrade.com" if platform == "etrade" else "https://apisb.etrade.com"
+    
+    try:
+        # Step 1: Get request token from E*TRADE
+        from rauth import OAuth1Service
+        
+        etrade = OAuth1Service(
+            name="etrade",
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            request_token_url=f"{base_url}/oauth/request_token",
+            access_token_url=f"{base_url}/oauth/access_token",
+            authorize_url="https://us.etrade.com/e/t/etws/authorize?key={}&token={}",
+            base_url=base_url
+        )
+        
+        # Get request token with oob callback (Out of Band - E*TRADE requirement)
+        # Try different callback formats that E*TRADE might accept
+        try:
+            logger.info(f"Attempting to get request token from {base_url}/oauth/request_token")
+            request_token, request_token_secret = etrade.get_request_token(
+                params={'oauth_callback': 'oob', 'format': 'json'}
+            )
+            logger.info(f"Successfully got request token: {request_token[:10]}...")
+        except Exception as e:
+            logger.warning(f"OOB callback failed, trying without callback: {e}")
+            try:
+                # Try without callback parameter
+                request_token, request_token_secret = etrade.get_request_token()
+                logger.info(f"Successfully got request token without callback: {request_token[:10]}...")
+            except Exception as e2:
+                logger.error(f"Failed to get request token: {e2}")
+                raise HTTPException(500, f"Failed to get E*TRADE request token: {str(e2)}")
+        
+        # Generate OAuth state
+        state = secrets.token_urlsafe(32)
+        
+        # Store state in database (expires in 10 minutes)
+        from shared.database import EtradeOAuthState
+        oauth_state = EtradeOAuthState(
+            state=state,
+            email=email,
+            platform=platform,
+            request_token=request_token,
+            request_token_secret=request_token_secret,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
+        )
+        db.add(oauth_state)
+        db.commit()
+        
+        # Build E*TRADE authorization URL
+        auth_url = f"https://us.etrade.com/e/t/etws/authorize?key={consumer_key}&token={request_token}"
+        
+        logger.info(f"Redirecting to E*TRADE OAuth1: {auth_url}")
+        
+        # For OOB flow, show instructions page instead of direct redirect
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>E*TRADE Authorization</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                .warning {{ background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                .btn {{ background: #007bff; color: white; padding: 12px 24px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; text-decoration: none; display: inline-block; }}
+                .btn:hover {{ background: #0056b3; }}
+                .code {{ background: #f8f9fa; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 18px; text-align: center; margin: 10px 0; }}
+            </style>
+        </head>
+        <body>
+            <h1>🔐 E*TRADE Authorization Required</h1>
+            
+            <div class="info">
+                <h3>Step 1: Authorize on E*TRADE</h3>
+                <p>Click the button below to go to E*TRADE and authorize this application.</p>
+                <p><a href="{auth_url}" class="btn" target="_blank">Authorize on E*TRADE →</a></p>
+            </div>
+            
+            <div class="warning">
+                <h3>Step 2: Get Verification Code</h3>
+                <p>After authorizing, E*TRADE will show you a verification code. Copy that code and come back here.</p>
+            </div>
+            
+            <div class="info">
+                <h3>Step 3: Enter Verification Code</h3>
+                <p>Enter the verification code you received from E*TRADE:</p>
+                <form method="post" action="/setup/etrade/verify">
+                    <input type="hidden" name="state" value="{state}">
+                    <input type="text" name="verifier" placeholder="Enter verification code" required style="width: 100%; padding: 10px; font-size: 16px; margin: 10px 0;">
+                    <button type="submit" class="btn" style="width: 100%;">Complete Authorization</button>
+                </form>
+            </div>
+            
+            <p><a href="/setup">← Back to Setup</a></p>
+        </body>
+        </html>
+        """)
+        
+    except Exception as e:
+        logger.error(f"E*TRADE OAuth1 initiation failed: {e}")
+        raise HTTPException(500, f"E*TRADE OAuth1 initiation failed: {str(e)}")
+
+@router.post("/setup/etrade/verify")
+async def etrade_oauth_verify(
+    request: Request,
+    state: str = Form(...),
+    verifier: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle manual verification code entry for E*TRADE OAuth1 OOB flow.
+    
+    This endpoint:
+    1. Validates the state parameter
+    2. Exchanges request token for access tokens using the verifier
+    3. Updates user credentials with access tokens
+    4. Returns success page
+    """
+    logger.info(f"Received E*TRADE OAuth1 verification - state: {state}, verifier: {verifier}")
+
+    # Find OAuth state by state parameter
+    from shared.database import EtradeOAuthState
+    oauth_state = db.query(EtradeOAuthState).filter(EtradeOAuthState.state == state).first()
+
+    if not oauth_state:
+        raise HTTPException(400, "Invalid or expired OAuth state")
+
+    # Check expiration
+    current_time = datetime.now(timezone.utc)
+    expires_at = oauth_state.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    
+    if expires_at < current_time:
+        db.delete(oauth_state)
+        db.commit()
+        raise HTTPException(400, "OAuth state expired - please try again")
+
+    try:
+        # Get the authenticated user first
+        user = db.query(User).filter(User.email == oauth_state.email).first()
+        if not user:
+            raise HTTPException(400, "User not found. Please login again.")
+
+        # Get stored consumer credentials
+        from auth.auth_utils import get_user_trading_credentials
+        access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret = get_user_trading_credentials(
+            str(user.user_id), oauth_state.platform, db
+        )
+        
+        if not consumer_key or not consumer_secret:
+            raise HTTPException(400, f"No consumer credentials found for {oauth_state.platform}")
+
+        # Determine base URL based on platform
+        base_url = "https://api.etrade.com" if oauth_state.platform == "etrade" else "https://apisb.etrade.com"
+        
+        # Step 2: Exchange request token for access token
+        from rauth import OAuth1Service
+        
+        etrade = OAuth1Service(
+            name="etrade",
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            request_token_url=f"{base_url}/oauth/request_token",
+            access_token_url=f"{base_url}/oauth/access_token",
+            authorize_url="https://us.etrade.com/e/t/etws/authorize?key={}&token={}",
+            base_url=base_url
+        )
+        
+        # Exchange request token for access token
+        access_token, access_token_secret = etrade.get_access_token(
+            oauth_state.request_token,
+            oauth_state.request_token_secret,
+            params={'oauth_verifier': verifier}
+        )
+        
+        logger.info(f"Using authenticated user: {user.user_id}")
+
+        # Update credentials with access tokens
+        from auth.auth_utils import store_user_trading_credentials
+        store_user_trading_credentials(
+            user_id=str(user.user_id),
+            platform=oauth_state.platform,
+            access_token=access_token,
+            account_number="",  # E*TRADE doesn't use account_number in the same way
+            db=db,
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            access_token_secret=access_token_secret
+        )
+
+        # Clean up OAuth state
+        db.delete(oauth_state)
+        db.commit()
+
+        logger.info(f"Successfully stored E*TRADE access tokens for user {user.user_id}")
+
+        # Return success page
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>E*TRADE Setup Complete</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                .success {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; }}
+                .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
+            </style>
+        </head>
+        <body>
+            <div class="success">
+                <h2>✅ E*TRADE Credentials Registered Successfully!</h2>
+                <p>Your E*TRADE {oauth_state.platform} credentials have been encrypted and stored.</p>
+            </div>
+
+            <div class="info">
+                <h3>Next Steps:</h3>
+                <ol>
+                    <li>Your User ID: <code>{user.user_id}</code></li>
+                    <li>Platform: <code>{oauth_state.platform}</code></li>
+                    <li>You can now configure your MCP client to connect to this server</li>
+                    <li>The client will handle OAuth authentication automatically</li>
+                </ol>
+            </div>
+
+            <p><a href="/setup">Register another credential →</a></p>
+        </body>
+        </html>
+        """)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"E*TRADE OAuth1 verification failed: {e}")
+
+        # Clean up OAuth state on error
+        try:
+            db.delete(oauth_state)
+            db.commit()
+        except:
+            pass
+
+        raise HTTPException(500, f"E*TRADE OAuth1 verification failed: {str(e)}")
+
+@router.get("/setup/etrade/callback")
+async def etrade_oauth_callback(
+    oauth_token: str = None,
+    oauth_verifier: str = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Handle OAuth1 callback from E*TRADE.
+
+    This endpoint:
+    1. Validates oauth_token parameter
+    2. Exchanges request token for access tokens
+    3. Updates user credentials with access tokens
+    4. Returns success page
+    """
+    logger.info(f"Received E*TRADE OAuth1 callback - oauth_token: {oauth_token}, oauth_verifier: {oauth_verifier}")
+
+    # Find OAuth state by request token
+    from shared.database import EtradeOAuthState
+    oauth_state = db.query(EtradeOAuthState).filter(EtradeOAuthState.request_token == oauth_token).first()
+
+    if not oauth_state:
+        raise HTTPException(400, "Invalid or expired OAuth state")
+
+    # Check expiration
+    current_time = datetime.now(timezone.utc)
+    expires_at = oauth_state.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    
+    if expires_at < current_time:
+        db.delete(oauth_state)
+        db.commit()
+        raise HTTPException(400, "OAuth state expired - please try again")
+
+    try:
+        # Get the authenticated user first
+        user = db.query(User).filter(User.email == oauth_state.email).first()
+        if not user:
+            raise HTTPException(400, "User not found. Please login again.")
+
+        # Get stored consumer credentials
+        from auth.auth_utils import get_user_trading_credentials
+        access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret = get_user_trading_credentials(
+            str(user.user_id), oauth_state.platform, db
+        )
+        
+        if not consumer_key or not consumer_secret:
+            raise HTTPException(400, f"No consumer credentials found for {oauth_state.platform}")
+
+        # Determine base URL based on platform
+        base_url = "https://api.etrade.com" if oauth_state.platform == "etrade" else "https://apisb.etrade.com"
+        
+        # Step 2: Exchange request token for access token
+        from rauth import OAuth1Service
+        
+        etrade = OAuth1Service(
+            name="etrade",
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            request_token_url=f"{base_url}/oauth/request_token",
+            access_token_url=f"{base_url}/oauth/access_token",
+            authorize_url="https://us.etrade.com/e/t/etws/authorize?key={}&token={}",
+            base_url=base_url
+        )
+        
+        # Exchange request token for access token
+        access_token, access_token_secret = etrade.get_access_token(
+            oauth_state.request_token,
+            oauth_state.request_token_secret,
+            params={'oauth_verifier': oauth_verifier}
+        )
+        
+        logger.info(f"Using authenticated user: {user.user_id}")
+
+        # Update credentials with access tokens
+        from auth.auth_utils import store_user_trading_credentials
+        store_user_trading_credentials(
+            user_id=str(user.user_id),
+            platform=oauth_state.platform,
+            access_token=access_token,
+            account_number="",  # E*TRADE doesn't use account_number in the same way
+            db=db,
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            access_token_secret=access_token_secret
+        )
+
+        # Clean up OAuth state
+        db.delete(oauth_state)
+        db.commit()
+
+        logger.info(f"Successfully stored E*TRADE access tokens for user {user.user_id}")
+
+        # Return success page
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>E*TRADE Setup Complete</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                .success {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; }}
+                .info {{ background: #d1ecf1; border: 1px solid #bee5eb; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                code {{ background: #f8f9fa; padding: 2px 6px; border-radius: 3px; }}
+            </style>
+        </head>
+        <body>
+            <div class="success">
+                <h2>✅ E*TRADE Credentials Registered Successfully!</h2>
+                <p>Your E*TRADE {oauth_state.platform} credentials have been encrypted and stored.</p>
+            </div>
+
+            <div class="info">
+                <h3>Next Steps:</h3>
+                <ol>
+                    <li>Your User ID: <code>{user.user_id}</code></li>
+                    <li>Platform: <code>{oauth_state.platform}</code></li>
+                    <li>You can now configure your MCP client to connect to this server</li>
+                    <li>The client will handle OAuth authentication automatically</li>
+                </ol>
+            </div>
+
+            <p><a href="/setup">Register another credential →</a></p>
+        </body>
+        </html>
+        """)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"E*TRADE OAuth1 callback failed: {e}")
+
+        # Clean up OAuth state on error
+        try:
+            db.delete(oauth_state)
+            db.commit()
+        except:
+            pass
+
+        raise HTTPException(500, f"E*TRADE OAuth1 failed: {str(e)}")
 
 # ============================================================================
 # OAUTH AUTHORIZATION FLOW

@@ -42,7 +42,7 @@ mcp.settings.streamable_http_path = "/"
 logger.info("MCP Trading Server initialized")
 
 # Supported platforms
-SUPPORTED_PLATFORMS = ["tradier", "tradier_paper", "schwab"]
+SUPPORTED_PLATFORMS = ["tradier", "tradier_paper", "etrade", "etrade_paper", "schwab"]
 
 # Use TradingError from error_handling module instead of custom exception
 
@@ -94,7 +94,7 @@ async def get_positions(
     
     Args:
         ctx: FastMCP Context (automatically injected, contains user_id and db)
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
     
     Returns:
@@ -160,7 +160,7 @@ async def get_quote(
     Args:
         ctx: FastMCP Context (automatically injected)
         symbol: Stock symbol (e.g., 'AAPL', 'MSFT')
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
     
     Returns:
         JSON string containing quote information
@@ -212,7 +212,7 @@ async def place_multileg_order(
               Example: "V251017C00340000" (V call, Oct 17 2025, $340 strike)
               Note: Option symbols are validated and converted automatically for each platform
         account_id: Optional account ID override
-        platform: Trading platform (currently 'tradier', 'tradier_paper', and 'schwab' are supported)
+        platform: Trading platform (currently 'tradier', 'tradier_paper', 'etrade', 'etrade_paper', and 'schwab' are supported)
         order_type: Order type ('market' or 'limit')
         duration: Order duration ('day', 'gtc')
         preview: Preview to check if the order would be accepted. This should always be done before placing the order.  (default: True)
@@ -285,7 +285,7 @@ async def get_balance(
     
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
     
     Returns:
@@ -328,7 +328,7 @@ async def view_orders(
     
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
         include_filled: Include filled orders (default: True)
     
@@ -376,7 +376,7 @@ async def cancel_order(
     Args:
         ctx: FastMCP Context (automatically injected)
         order_id: Order ID to cancel
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
     
     Returns:
@@ -420,7 +420,7 @@ async def get_account_history(
     
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
         limit: Number of records to return
         start_date: Start date (YYYY-MM-DD format)
@@ -462,7 +462,7 @@ async def get_account_status(ctx: Context, platform: str) -> str:
 
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
 
     Returns:
         JSON string containing account status information
@@ -474,7 +474,7 @@ async def get_account_status(ctx: Context, platform: str) -> str:
     try:
         # Try to get user's trading credentials
         try:
-            _, account_number = get_user_trading_credentials(user_id, platform, db)
+            access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret = get_user_trading_credentials(user_id, platform, db)
             credentials_configured = True
         except ValueError:
             credentials_configured = False
@@ -509,7 +509,7 @@ async def get_account_info(
 
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Trading platform to use ('tradier', 'tradier_paper', or 'schwab')
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
 
     Returns:
@@ -795,7 +795,7 @@ async def revoke_all_tokens(ctx: Context, platform: Optional[str] = None) -> str
     
     Args:
         ctx: FastMCP Context (automatically injected)
-        platform: Optional platform filter (e.g., 'tradier', 'schwab'). 
+        platform: Optional platform filter (e.g., 'tradier', 'etrade', 'schwab'). 
                   If not specified, revokes all tokens for all platforms.
     
     Returns:

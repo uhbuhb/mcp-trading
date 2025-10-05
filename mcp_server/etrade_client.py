@@ -1,0 +1,722 @@
+"""
+E*TRADE API Client
+Handles all API interactions with the E*TRADE trading platform.
+"""
+
+import os
+import json
+import logging
+import random
+from typing import Dict, List, Optional, Any
+from rauth import OAuth1Service
+from mcp_server.trading_platform_interface import TradingPlatformInterface
+from mcp_server.error_handling import TradingError, ErrorCode
+
+logger = logging.getLogger("etrade_client")
+
+
+class EtradeClient(TradingPlatformInterface):
+    """Client for interacting with the E*TRADE API."""
+    
+    def __init__(self, consumer_key: str, consumer_secret: str, 
+                 access_token: str, access_token_secret: str,
+                 base_url: str = "https://api.etrade.com"):
+        """
+        Initialize the E*TRADE client.
+        
+        Args:
+            consumer_key: E*TRADE consumer key
+            consumer_secret: E*TRADE consumer secret
+            access_token: OAuth access token
+            access_token_secret: OAuth access token secret
+            base_url: Base URL for the API (e.g., 'https://api.etrade.com' or 'https://apisb.etrade.com')
+        """
+        self.consumer_key = consumer_key
+        self.consumer_secret = consumer_secret
+        self.access_token = access_token
+        self.access_token_secret = access_token_secret
+        self.base_url = base_url
+        self._session = None
+        
+        logger.info(f"Initialized EtradeClient with base_url: {base_url}")
+
+    def _create_session(self):
+        """Create OAuth1 session for E*TRADE"""
+        if self._session is None:
+            logger.debug(f"Creating OAuth1 session with base_url: {self.base_url}")
+            logger.debug(f"Consumer key: {self.consumer_key[:10]}...")
+            logger.debug(f"Access token: {self.access_token[:10]}...")
+            
+            etrade = OAuth1Service(
+                name="etrade",
+                consumer_key=self.consumer_key,
+                consumer_secret=self.consumer_secret,
+                request_token_url=f"{self.base_url}/oauth/request_token",
+                access_token_url=f"{self.base_url}/oauth/access_token",
+                authorize_url="https://us.etrade.com/e/t/etws/authorize?key={}&token={}",
+                base_url=self.base_url
+            )
+            
+            # Create session with existing access tokens
+            self._session = etrade.get_session(
+                (self.access_token, self.access_token_secret)
+            )
+            
+            logger.debug(f"Successfully created E*TRADE OAuth1 session")
+        return self._session
+
+    def _make_request(self, endpoint: str, method: str = 'GET', 
+                      params: Optional[Dict] = None, 
+                      data: Optional[str] = None,
+                      headers: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make authenticated API request to E*TRADE"""
+        session = self._create_session()
+        url = f"{self.base_url}{endpoint}"
+        
+        # Use existing E*TRADE header patterns (as per original client)
+        request_headers = {"consumerkey": self.consumer_key}
+        if headers:
+            request_headers.update(headers)
+        
+        logger.debug(f"Making {method} request to {url} with headers: {request_headers}")
+        
+        try:
+            if method.upper() == 'GET':
+                # Only pass params if they exist (rauth doesn't like None)
+                if params:
+                    response = session.get(url, header_auth=True, params=params, headers=request_headers)
+                else:
+                    response = session.get(url, header_auth=True, headers=request_headers)
+            elif method.upper() == 'POST':
+                response = session.post(url, header_auth=True, data=data, headers=request_headers)
+            elif method.upper() == 'PUT':
+                response = session.put(url, header_auth=True, data=data, headers=request_headers)
+            elif method.upper() == 'DELETE':
+                response = session.delete(url, header_auth=True, headers=request_headers)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+            
+            # Handle response using existing E*TRADE patterns
+            if response.status_code == 200:
+                logger.debug(f"E*TRADE API success - Status: {response.status_code}")
+                logger.debug(f"Response headers: {dict(response.headers)}")
+                logger.debug(f"Response text (first 500 chars): {response.text[:500]}")
+                
+                try:
+                    json_response = response.json()
+                    logger.debug(f"Parsed JSON response: {json_response}")
+                    return json_response
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON response: {e}")
+                    logger.error(f"Full response text: {response.text}")
+                    raise TradingError(
+                        f"E*TRADE API returned invalid JSON: {str(e)}",
+                        ErrorCode.TRADING_PLATFORM_ERROR,
+                        details={"response_text": response.text}
+                    )
+            elif response.status_code == 204:
+                return {}  # No content
+            else:
+                # Log the full response for debugging
+                logger.error(f"E*TRADE API error - Status: {response.status_code}, Headers: {dict(response.headers)}")
+                logger.error(f"Response text: {response.text}")
+                
+                # Handle errors using existing E*TRADE patterns
+                if response.headers.get('Content-Type') == 'application/json':
+                    try:
+                        error_data = response.json()
+                        if 'Error' in error_data and 'message' in error_data['Error']:
+                            raise TradingError(
+                                f"E*TRADE API error: {error_data['Error']['message']}",
+                                ErrorCode.TRADING_PLATFORM_ERROR,
+                                details={"status_code": response.status_code, "response": error_data}
+                            )
+                    except json.JSONDecodeError:
+                        pass
+                
+                raise TradingError(
+                    f"E*TRADE API request failed with status {response.status_code}: {response.text}",
+                    ErrorCode.TRADING_PLATFORM_ERROR,
+                    details={"status_code": response.status_code, "response_text": response.text}
+                )
+                
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"E*TRADE API request failed: {e}")
+            raise TradingError(
+                f"E*TRADE API request failed: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def _resolve_account_id(self, account_id: Optional[str]) -> str:
+        """Resolve account ID, supporting both accountId and accountIdKey"""
+        logger.debug(f"Resolving account_id: {account_id}")
+        
+        # If no account_id provided, fetch account list and let user choose
+        if not account_id or account_id == "etrade_account":
+            logger.info("No account ID provided, fetching account list")
+            try:
+                accounts = self.list_all_accounts()
+                if not accounts:
+                    raise ValueError("No accounts found in E*TRADE")
+                
+                # If only one account, use it automatically
+                if len(accounts) == 1:
+                    account = accounts[0]
+                    logger.info(f"Only one account found, using: {account['accountId']} ({account['accountDesc']})")
+                    return account['accountIdKey']
+                
+                # Multiple accounts - raise error with account list for user to choose
+                account_list = []
+                for acc in accounts:
+                    account_list.append({
+                        'accountId': acc['accountId'],
+                        'accountDesc': acc['accountDesc'],
+                        'accountType': acc['accountType'],
+                        'institutionType': acc['institutionType'],
+                        'accountStatus': acc['accountStatus']
+                    })
+                
+                raise ValueError(f"Multiple accounts found. Please specify account_id. Available accounts: {account_list}")
+                
+            except Exception as e:
+                logger.error(f"Failed to resolve account ID: {e}")
+                raise ValueError(f"Failed to resolve account ID: {str(e)}")
+        
+        # If account_id is provided, validate it exists and return accountIdKey
+        try:
+            accounts = self.list_all_accounts()
+            for account in accounts:
+                # Support both accountId and accountIdKey for user convenience
+                if account['accountId'] == account_id or account['accountIdKey'] == account_id:
+                    logger.debug(f"Found matching account: {account['accountId']} ({account['accountDesc']})")
+                    return account['accountIdKey']  # Always use accountIdKey for API calls
+            
+            # Account not found
+            available_ids = [acc['accountId'] for acc in accounts]
+            raise ValueError(f"Account ID '{account_id}' not found. Available account IDs: {available_ids}")
+            
+        except Exception as e:
+            logger.error(f"Failed to validate account ID: {e}")
+            raise ValueError(f"Failed to validate account ID: {str(e)}")
+
+
+    def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get account information from E*TRADE"""
+        try:
+            logger.info(f"Getting account info for account_id: {account_id}")
+            
+            # Get all accounts
+            accounts = self.list_all_accounts()
+            if not accounts:
+                logger.warning("No accounts found in E*TRADE")
+                return {}
+            
+            # If specific account requested, find and return it
+            if account_id:
+                for account in accounts:
+                    if account['accountId'] == account_id or account['accountIdKey'] == account_id:
+                        logger.info(f"Found requested account: {account['accountId']} ({account['accountDesc']})")
+                        return self._format_account_info(account)
+                
+                # Account not found
+                available_ids = [acc['accountId'] for acc in accounts]
+                raise ValueError(f"Account ID '{account_id}' not found. Available account IDs: {available_ids}")
+            
+            # If no specific account requested, return all accounts info
+            logger.info(f"Returning info for all {len(accounts)} accounts")
+            return {
+                'accounts': [self._format_account_info(acc) for acc in accounts],
+                'total_accounts': len(accounts)
+            }
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get account info from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to get account info from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def get_account_number(self) -> str:
+        """Get the primary account number (first active brokerage account)"""
+        try:
+            accounts = self.list_all_accounts()
+            if not accounts:
+                return 'N/A'
+            
+            # Find first active brokerage account
+            for account in accounts:
+                if (account.get('institutionType') == 'BROKERAGE' and 
+                    account.get('accountStatus') != 'CLOSED'):
+                    return account.get('accountIdKey', 'N/A')
+            
+            # If no brokerage account, return first account
+            return accounts[0].get('accountIdKey', 'N/A')
+            
+        except Exception as e:
+            logger.error(f"Failed to get account number: {e}")
+            return 'N/A'
+
+    def list_all_accounts(self) -> List[Dict[str, Any]]:
+        """List all available accounts with their details"""
+        try:
+            logger.info("Fetching all accounts from E*TRADE")
+            response = self._make_request("/v1/accounts/list.json")
+            
+            if not response:
+                logger.warning("E*TRADE API returned empty response for account list")
+                return []
+            
+            accounts = []
+            if isinstance(response, dict) and "AccountListResponse" in response:
+                account_list_response = response["AccountListResponse"]
+                if isinstance(account_list_response, dict) and "Accounts" in account_list_response:
+                    accounts_data = account_list_response["Accounts"]
+                    if isinstance(accounts_data, dict) and "Account" in accounts_data:
+                        account_list = accounts_data["Account"]
+                        if not isinstance(account_list, list):
+                            account_list = [account_list]
+                        
+                        for account in account_list:
+                            if isinstance(account, dict):
+                                accounts.append({
+                                    'accountId': account.get('accountId', 'N/A'),
+                                    'accountIdKey': account.get('accountIdKey', 'N/A'),
+                                    'accountDesc': account.get('accountDesc', 'N/A'),
+                                    'accountType': account.get('accountType', 'N/A'),
+                                    'institutionType': account.get('institutionType', 'N/A'),
+                                    'accountStatus': account.get('accountStatus', 'N/A'),
+                                    'accountMode': account.get('accountMode', 'N/A')
+                                })
+            
+            logger.info(f"Found {len(accounts)} accounts")
+            return accounts
+            
+        except Exception as e:
+            logger.error(f"Failed to list accounts from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to list accounts from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def get_positions(self, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get positions from E*TRADE"""
+        try:
+            logger.info(f"Getting positions for account_id: {account_id}")
+            account_to_use = self._resolve_account_id(account_id)
+            logger.info(f"Resolved account_id to: {account_to_use}")
+            
+            # Use existing portfolio endpoint
+            endpoint = f"/v1/accounts/{account_to_use}/portfolio.json"
+            logger.info(f"Making request to endpoint: {endpoint}")
+            response = self._make_request(endpoint)
+            
+            # Add null checking and better error handling
+            if not response:
+                logger.warning("E*TRADE API returned empty response for positions")
+                return []
+            
+            logger.debug(f"E*TRADE positions response: {response}")
+            
+            if isinstance(response, dict) and "PortfolioResponse" in response:
+                portfolio_response = response["PortfolioResponse"]
+                if isinstance(portfolio_response, dict) and "AccountPortfolio" in portfolio_response:
+                    account_portfolio = portfolio_response["AccountPortfolio"]
+                    positions = []
+                    
+                    # Handle both single account and multiple accounts
+                    if isinstance(account_portfolio, list):
+                        portfolio_list = account_portfolio
+                    else:
+                        portfolio_list = [account_portfolio]
+                    
+                    for acct_portfolio in portfolio_list:
+                        if isinstance(acct_portfolio, dict) and "Position" in acct_portfolio:
+                            position_data = acct_portfolio["Position"]
+                            # Handle both single position and multiple positions
+                            if isinstance(position_data, list):
+                                position_list = position_data
+                            else:
+                                position_list = [position_data]
+                            
+                            for position in position_list:
+                                if isinstance(position, dict):
+                                    formatted_position = self._format_position_response(position)
+                                    positions.append(formatted_position)
+                    
+                    return positions
+            
+            logger.warning(f"Unexpected E*TRADE positions response structure: {response}")
+            return []
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get positions from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to get positions from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def get_quote(self, symbol: str) -> Dict[str, Any]:
+        """Get quote from E*TRADE"""
+        try:
+            # Use existing quotes endpoint
+            response = self._make_request(f"/v1/market/quote/{symbol}.json")
+            
+            if "QuoteResponse" in response and "QuoteData" in response["QuoteResponse"]:
+                quote_data = response["QuoteResponse"]["QuoteData"]
+                if isinstance(quote_data, list):
+                    quote_data = quote_data[0]
+                return self._format_quote_response(quote_data)
+            
+            raise Exception(f"No quote data found for symbol: {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Failed to get quote from E*TRADE: {e}")
+            raise
+
+    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get account balance from E*TRADE"""
+        try:
+            account_to_use = self._resolve_account_id(account_id)
+            
+            # Use existing balance endpoint with existing parameters
+            params = {"instType": "BROKERAGE", "realTimeNAV": "true"}
+            response = self._make_request(f"/v1/accounts/{account_to_use}/balance.json", params=params)
+            
+            if "BalanceResponse" in response:
+                return self._format_balance_response(response["BalanceResponse"])
+            
+            return {}
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get balance from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to get balance from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def get_orders(self, account_id: Optional[str] = None, include_filled: bool = True) -> List[Dict[str, Any]]:
+        """Get orders from E*TRADE"""
+        try:
+            account_to_use = self._resolve_account_id(account_id)
+            
+            # Use existing orders endpoint with existing status patterns
+            all_orders = []
+            statuses = ["OPEN", "EXECUTED", "INDIVIDUAL_FILLS", "CANCELLED", "REJECTED", "EXPIRED"]
+            
+            for status in statuses:
+                if not include_filled and status in ["EXECUTED", "INDIVIDUAL_FILLS"]:
+                    continue
+                    
+                params = {"status": status}
+                response = self._make_request(f"/v1/accounts/{account_to_use}/orders.json", params=params)
+                
+                if "OrdersResponse" in response and "Order" in response["OrdersResponse"]:
+                    orders = response["OrdersResponse"]["Order"]
+                    if not isinstance(orders, list):
+                        orders = [orders]
+                    
+                    for order in orders:
+                        formatted_order = self._format_order_response(order, status)
+                        all_orders.append(formatted_order)
+            
+            return all_orders
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get orders from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to get orders from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def cancel_order(self, account_id: str, order_id: str) -> Dict[str, Any]:
+        """Cancel order using existing E*TRADE patterns"""
+        try:
+            # Use existing cancel order endpoint with existing XML pattern
+            url = f"/v1/accounts/{account_id}/orders/cancel.json"
+            headers = {"Content-Type": "application/xml"}
+            
+            # Use existing XML payload pattern
+            xml_payload = f"""<CancelOrderRequest>
+                                <orderId>{order_id}</orderId>
+                            </CancelOrderRequest>"""
+            
+            response = self._make_request(url, method='PUT', data=xml_payload, headers=headers)
+            
+            if "CancelOrderResponse" in response and "orderId" in response["CancelOrderResponse"]:
+                return {"status": "success", "message": f"Order {order_id} cancelled"}
+            
+            return {"status": "error", "message": "Failed to cancel order"}
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to cancel order from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to cancel order from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def change_order(self, account_id: str, order_id: str, order_type: Optional[str] = None,
+                    price: Optional[float] = None, stop: Optional[float] = None,
+                    duration: Optional[str] = None, quantity: Optional[float] = None) -> Dict[str, Any]:
+        """Modify an existing order"""
+        try:
+            # E*TRADE doesn't support order modification directly
+            # This would need to be implemented by canceling and recreating
+            raise TradingError(
+                "E*TRADE does not support order modification. Please cancel and recreate the order.",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"platform": "etrade", "operation": "change_order"}
+            )
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to change order from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to change order from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def get_account_history(self, account_id: Optional[str] = None, limit: Optional[int] = None,
+                           start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get account transaction history from E*TRADE"""
+        try:
+            account_to_use = self._resolve_account_id(account_id)
+            
+            # Use existing transactions endpoint
+            params = {}
+            if limit:
+                params["count"] = limit
+            if start_date:
+                params["startDate"] = start_date
+            if end_date:
+                params["endDate"] = end_date
+            
+            response = self._make_request(f"/v1/accounts/{account_to_use}/transactions.json", params=params)
+            
+            if "TransactionListResponse" in response and "Transaction" in response["TransactionListResponse"]:
+                transactions = response["TransactionListResponse"]["Transaction"]
+                if not isinstance(transactions, list):
+                    transactions = [transactions]
+                
+                formatted_transactions = []
+                for transaction in transactions:
+                    formatted_transaction = self._format_transaction_response(transaction)
+                    formatted_transactions.append(formatted_transaction)
+                
+                return formatted_transactions
+            
+            return []
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get account history from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to get account history from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def place_multileg_order(self, account_id: str, symbol: str, legs: list, 
+                           order_type: str = 'market', duration: str = 'day', session: str = 'normal',
+                           preview: bool = False, price: Optional[float] = None) -> Dict[str, Any]:
+        """Place multileg order using existing E*TRADE patterns"""
+        try:
+            # Use existing preview/place endpoint pattern
+            if preview:
+                url = f"/v1/accounts/{account_id}/orders/preview.json"
+            else:
+                url = f"/v1/accounts/{account_id}/orders/place.json"
+            
+            headers = {"Content-Type": "application/xml"}
+            
+            # Build XML payload using existing pattern but extend for multileg
+            xml_payload = self._build_multileg_xml_payload(legs, order_type, duration, price)
+            
+            response = self._make_request(url, method='POST', data=xml_payload, headers=headers)
+            return response
+            
+        except TradingError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to place multileg order from E*TRADE: {e}")
+            raise TradingError(
+                f"Failed to place multileg order from E*TRADE: {str(e)}",
+                ErrorCode.TRADING_PLATFORM_ERROR,
+                details={"error": str(e)}
+            )
+
+    def _build_multileg_xml_payload(self, legs: list, order_type: str, 
+                                    duration: str, price: Optional[float]) -> str:
+        """Build XML payload for multileg orders using existing pattern"""
+        # Extend existing XML template pattern
+        xml_template = """<PreviewOrderRequest>
+            <orderType>MULTILEG</orderType>
+            <clientOrderId>{client_order_id}</clientOrderId>
+            <Order>
+                <allOrNone>false</allOrNone>
+                <priceType>{price_type}</priceType>
+                <orderTerm>{duration}</orderTerm>
+                <marketSession>REGULAR</marketSession>
+                <stopPrice></stopPrice>
+                <limitPrice>{limit_price}</limitPrice>
+                {instruments}
+            </Order>
+        </PreviewOrderRequest>"""
+        
+        # Build instruments section
+        instruments_xml = ""
+        for leg in legs:
+            instruments_xml += f"""
+            <Instrument>
+                <Product>
+                    <securityType>OPTN</securityType>
+                    <symbol>{leg['option_symbol']}</symbol>
+                </Product>
+                <orderAction>{leg['side']}</orderAction>
+                <quantityType>QUANTITY</quantityType>
+                <quantity>{leg['quantity']}</quantity>
+            </Instrument>"""
+        
+        return xml_template.format(
+            client_order_id=random.randint(1000000000, 9999999999),
+            price_type=order_type,
+            duration=duration,
+            limit_price=price or "",
+            instruments=instruments_xml
+        )
+
+    # Response formatting methods
+    def _format_account_info(self, account: Dict[str, Any]) -> Dict[str, Any]:
+        """Format E*TRADE account response to standard format"""
+        return {
+            'account_id': account.get('accountId', 'N/A'),
+            'account_number': account.get('accountIdKey', 'N/A'),
+            'type': account.get('institutionType', 'N/A'),
+            'is_day_trader': account.get('dayTrader', False),
+            'is_closing_only': account.get('closingOnly', False),
+            'status': account.get('accountStatus', 'N/A'),
+            'description': account.get('accountDesc', 'N/A')
+        }
+
+    def _format_balance_response(self, balance_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format E*TRADE balance response to standard format"""
+        computed = balance_data.get("Computed", {})
+        real_time = computed.get("RealTimeValues", {})
+        
+        return {
+            'total_cash': float(real_time.get('totalAccountValue', 0)),
+            'cash_available': float(computed.get('cashBuyingPower', 0)),
+            'cash_unsettled': float(computed.get('unsettledCash', 0)),
+            'total_equity': float(real_time.get('totalAccountValue', 0)),
+            'long_market_value': float(computed.get('longMarketValue', 0)),
+            'short_market_value': float(computed.get('shortMarketValue', 0)),
+            'buying_power': float(computed.get('marginBuyingPower', 0)),
+            'day_trade_buying_power': float(computed.get('dayTradingBuyingPower', 0)),
+            'maintenance_requirement': float(computed.get('maintenanceRequirement', 0))
+        }
+
+    def _format_quote_response(self, quote: Dict[str, Any]) -> Dict[str, Any]:
+        """Format E*TRADE quote response to standard format"""
+        product = quote.get("Product", {})
+        all_data = quote.get("All", {})
+        
+        return {
+            'symbol': product.get('symbol', 'N/A'),
+            'description': product.get('companyName', 'N/A'),
+            'last': all_data.get('lastTrade', 'N/A'),
+            'bid': all_data.get('bid', 'N/A'),
+            'ask': all_data.get('ask', 'N/A'),
+            'volume': all_data.get('totalVolume', 'N/A'),
+            'high': all_data.get('high', 'N/A'),
+            'low': all_data.get('low', 'N/A'),
+            'open': all_data.get('open', 'N/A'),
+            'previous_close': all_data.get('previousClose', 'N/A'),
+            'change': all_data.get('changeClose', 'N/A'),
+            'change_percentage': all_data.get('changeClosePercentage', 'N/A'),
+            'bid_size': all_data.get('bidSize', 'N/A'),
+            'ask_size': all_data.get('askSize', 'N/A')
+        }
+
+    def _format_position_response(self, position: Dict[str, Any]) -> Dict[str, Any]:
+        """Format E*TRADE position response to standard format"""
+        # Based on original E*TRADE client field names
+        quick = position.get('Quick', {})
+        
+        return {
+            'symbol': position.get('symbolDescription', 'N/A'),
+            'description': position.get('symbolDescription', 'N/A'),
+            'quantity': position.get('quantity', 0),
+            'cost_basis': position.get('pricePaid', 0),
+            'last_price': quick.get('lastTrade', 0),
+            'market_value': position.get('marketValue', 0),
+            'gain_loss': position.get('totalGain', 0),
+            'type': position.get('assetType', 'N/A')
+        }
+
+    def _format_order_response(self, order: Dict[str, Any], status: str) -> Dict[str, Any]:
+        """Format E*TRADE order response to standard format"""
+        # Extract order details (reuse existing parsing logic)
+        order_detail = order.get("OrderDetail", [])
+        if not isinstance(order_detail, list):
+            order_detail = [order_detail]
+        
+        formatted_orders = []
+        for detail in order_detail:
+            instruments = detail.get("Instrument", [])
+            if not isinstance(instruments, list):
+                instruments = [instruments]
+                
+            for instrument in instruments:
+                product = instrument.get("Product", {})
+                formatted_order = {
+                    'order_id': order.get('orderId', 'N/A'),
+                    'status': detail.get('status', status),
+                    'symbol': product.get('symbol', 'N/A'),
+                    'side': instrument.get('orderAction', 'N/A'),
+                    'quantity': instrument.get('orderedQuantity', 0),
+                    'filled_quantity': instrument.get('filledQuantity', 0),
+                    'price': detail.get('limitPrice', 0),
+                    'order_type': detail.get('priceType', 'N/A'),
+                    'duration': detail.get('orderTerm', 'N/A'),
+                    'created_time': order.get('orderTime', 'N/A')
+                }
+                formatted_orders.append(formatted_order)
+        
+        return formatted_orders[0] if formatted_orders else {}
+
+    def _format_transaction_response(self, transaction: Dict[str, Any]) -> Dict[str, Any]:
+        """Format E*TRADE transaction response to standard format"""
+        return {
+            'date': transaction.get('date', 'N/A'),
+            'type': transaction.get('type', 'N/A'),
+            'amount': float(transaction.get('amount', 0)),
+            'quantity': float(transaction.get('quantity', 0)),
+            'price': float(transaction.get('price', 0)),
+            'symbol': transaction.get('symbol', 'N/A'),
+            'description': transaction.get('description', 'N/A'),
+            'transaction_date': transaction.get('transactionDate', 'N/A'),
+            'trade_date': transaction.get('tradeDate', 'N/A'),
+            'settlement_date': transaction.get('settlementDate', 'N/A'),
+            'commission': float(transaction.get('commission', 0)),
+            'fees': float(transaction.get('fees', 0))
+        }

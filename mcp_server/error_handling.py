@@ -209,7 +209,7 @@ def validate_required_fields(data: Dict[str, Any], required_fields: list) -> Non
 
 def validate_platform(platform: str) -> None:
     """Validate that the platform is supported."""
-    supported_platforms = ["tradier", "tradier_paper", "schwab"]
+    supported_platforms = ["tradier", "tradier_paper", "etrade", "etrade_paper", "schwab"]
     if platform not in supported_platforms:
         raise ValidationError(
             f"Unsupported platform: {platform}",

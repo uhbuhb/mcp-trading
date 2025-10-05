@@ -35,11 +35,14 @@ class UserCredential(Base):
     __tablename__ = "user_credentials"
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), primary_key=True)
-    platform = Column(String, primary_key=True)  # 'tradier', 'tradier_paper', 'schwab'
+    platform = Column(String, primary_key=True)  # 'tradier', 'tradier_paper', 'schwab', 'etrade', 'etrade_paper'
     encrypted_access_token = Column(LargeBinary, nullable=False)
     encrypted_account_number = Column(LargeBinary, nullable=False)
     encrypted_refresh_token = Column(LargeBinary, nullable=True)  # For OAuth platforms like Schwab
     encrypted_account_hash = Column(LargeBinary, nullable=True)  # For platforms using hashes instead of account numbers
+    encrypted_consumer_key = Column(LargeBinary, nullable=True)  # For E*TRADE OAuth1 consumer key
+    encrypted_consumer_secret = Column(LargeBinary, nullable=True)  # For E*TRADE OAuth1 consumer secret
+    encrypted_access_token_secret = Column(LargeBinary, nullable=True)  # For E*TRADE OAuth1 access token secret
     token_expires_at = Column(DateTime, nullable=True)  # For OAuth token expiration tracking
     encryption_key_id = Column(String, nullable=False, default="default")  # For key rotation
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -110,6 +113,18 @@ class SchwabOAuthState(Base):
     email = Column(String, nullable=False)
     password = Column(String, nullable=True)  # For new users
     code_verifier = Column(String, nullable=False)  # PKCE code verifier
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class EtradeOAuthState(Base):
+    """Temporary state storage for E*TRADE OAuth1 flow."""
+    __tablename__ = "etrade_oauth_states"
+
+    state = Column(String, primary_key=True)  # OAuth state parameter
+    email = Column(String, nullable=False)
+    platform = Column(String, nullable=False)  # 'etrade' or 'etrade_paper'
+    request_token = Column(String, nullable=False)  # OAuth1 request token
+    request_token_secret = Column(String, nullable=False)  # OAuth1 request token secret
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 

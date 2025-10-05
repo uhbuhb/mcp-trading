@@ -10,6 +10,7 @@ from datetime import datetime
 
 from mcp_server.tradier_client import TradierClient
 from mcp_server.schwab_client import SchwabClient
+from mcp_server.etrade_client import EtradeClient
 from mcp_server.trading_platform_interface import TradingPlatformInterface
 from auth.auth_utils import get_user_trading_credentials
 from mcp_server.error_handling import TradingError, ErrorCode, validate_platform
@@ -20,6 +21,8 @@ logger = logging.getLogger("trading_client_factory")
 PLATFORM_BASE_URLS = {
     "tradier": "https://api.tradier.com",
     "tradier_paper": "https://sandbox.tradier.com",
+    "etrade": "https://api.etrade.com",
+    "etrade_paper": "https://apisb.etrade.com",
     "schwab": None  # Schwab handles its own base URL
 }
 
@@ -35,13 +38,14 @@ class TradingClientFactory:
         Create a trading client for the specified platform.
         
         Args:
-            platform: Trading platform ('tradier', 'tradier_paper', 'schwab')
+            platform: Trading platform ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', 'schwab')
             credentials: Dictionary containing platform-specific credentials
             
         Returns:
             Tuple of (client, account_identifier)
             - For Tradier: account_identifier is account_number
             - For Schwab: account_identifier is account_hash
+            - For E*TRADE: account_identifier is account_id
             
         Raises:
             TradingError: If platform is unsupported or credentials are invalid
@@ -54,6 +58,8 @@ class TradingClientFactory:
         try:
             if platform in ["tradier", "tradier_paper"]:
                 return TradingClientFactory._create_tradier_client(platform, credentials)
+            elif platform in ["etrade", "etrade_paper"]:
+                return TradingClientFactory._create_etrade_client(platform, credentials)
             elif platform == "schwab":
                 return TradingClientFactory._create_schwab_client(credentials)
             else:
@@ -82,7 +88,7 @@ class TradingClientFactory:
         
         Args:
             user_id: Authenticated user ID from OAuth token
-            platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'schwab')
+            platform: Trading platform (e.g., 'tradier', 'tradier_paper', 'etrade', 'etrade_paper', 'schwab')
             db: Database session
             
         Returns:
@@ -95,7 +101,7 @@ class TradingClientFactory:
         
         try:
             # Fetch and decrypt credentials
-            access_token, account_number, refresh_token, account_hash, token_expires_at = get_user_trading_credentials(
+            access_token, account_number, refresh_token, account_hash, token_expires_at, consumer_key, consumer_secret, access_token_secret = get_user_trading_credentials(
                 user_id, platform, db
             )
             
@@ -105,7 +111,10 @@ class TradingClientFactory:
                 "account_number": account_number,
                 "refresh_token": refresh_token,
                 "account_hash": account_hash,
-                "token_expires_at": token_expires_at
+                "token_expires_at": token_expires_at,
+                "consumer_key": consumer_key,
+                "consumer_secret": consumer_secret,
+                "access_token_secret": access_token_secret
             }
             
             # Create client
@@ -189,9 +198,60 @@ class TradingClientFactory:
         return client, account_hash
     
     @staticmethod
+    def _create_etrade_client(
+        platform: str,
+        credentials: Dict[str, Any]
+    ) -> Tuple[TradingPlatformInterface, str]:
+        """Create an E*TRADE client."""
+        consumer_key = credentials.get("consumer_key")
+        consumer_secret = credentials.get("consumer_secret")
+        access_token = credentials.get("access_token")
+        access_token_secret = credentials.get("access_token_secret")
+        
+        if not consumer_key:
+            raise TradingError(
+                "E*TRADE consumer key is required",
+                ErrorCode.INVALID_CREDENTIALS,
+                details={"platform": platform, "missing": "consumer_key"}
+            )
+        
+        if not consumer_secret:
+            raise TradingError(
+                "E*TRADE consumer secret is required",
+                ErrorCode.INVALID_CREDENTIALS,
+                details={"platform": platform, "missing": "consumer_secret"}
+            )
+        
+        if not access_token:
+            raise TradingError(
+                "E*TRADE access token is required",
+                ErrorCode.INVALID_CREDENTIALS,
+                details={"platform": platform, "missing": "access_token"}
+            )
+        
+        if not access_token_secret:
+            raise TradingError(
+                "E*TRADE access token secret is required",
+                ErrorCode.INVALID_CREDENTIALS,
+                details={"platform": platform, "missing": "access_token_secret"}
+            )
+        
+        base_url = PLATFORM_BASE_URLS[platform]
+        client = EtradeClient(
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            access_token=access_token,
+            access_token_secret=access_token_secret,
+            base_url=base_url
+        )
+        
+        logger.info(f"Created E*TRADE client for {platform}")
+        return client, "etrade_account"  # Will be resolved from account list
+    
+    @staticmethod
     def get_supported_platforms() -> list:
         """Get list of supported trading platforms."""
-        return ["tradier", "tradier_paper", "schwab"]
+        return ["tradier", "tradier_paper", "etrade", "etrade_paper", "schwab"]
     
     @staticmethod
     def get_platform_display_name(platform: str) -> str:
@@ -199,6 +259,8 @@ class TradingClientFactory:
         display_names = {
             "tradier": "Tradier Production",
             "tradier_paper": "Tradier Paper Trading",
+            "etrade": "E*TRADE Production",
+            "etrade_paper": "E*TRADE Paper Trading",
             "schwab": "Charles Schwab"
         }
         return display_names.get(platform, platform)
@@ -227,6 +289,8 @@ class TradingClientFactory:
         
         if platform in ["tradier", "tradier_paper"]:
             required_fields = ["access_token", "account_number"]
+        elif platform in ["etrade", "etrade_paper"]:
+            required_fields = ["consumer_key", "consumer_secret", "access_token", "access_token_secret"]
         elif platform == "schwab":
             required_fields = ["access_token", "refresh_token", "account_hash"]
         else:
@@ -262,6 +326,43 @@ class TradingClientFactory:
                     "Invalid account number format",
                     ErrorCode.INVALID_CREDENTIALS,
                     details={"platform": platform, "field": "account_number"}
+                )
+        
+        elif platform in ["etrade", "etrade_paper"]:
+            # Validate consumer key format (basic check)
+            consumer_key = credentials["consumer_key"]
+            if len(consumer_key) < 10:
+                raise TradingError(
+                    "Invalid consumer key format",
+                    ErrorCode.INVALID_CREDENTIALS,
+                    details={"platform": platform, "field": "consumer_key"}
+                )
+            
+            # Validate consumer secret format
+            consumer_secret = credentials["consumer_secret"]
+            if len(consumer_secret) < 10:
+                raise TradingError(
+                    "Invalid consumer secret format",
+                    ErrorCode.INVALID_CREDENTIALS,
+                    details={"platform": platform, "field": "consumer_secret"}
+                )
+            
+            # Validate access token format
+            access_token = credentials["access_token"]
+            if len(access_token) < 10:
+                raise TradingError(
+                    "Invalid access token format",
+                    ErrorCode.INVALID_CREDENTIALS,
+                    details={"platform": platform, "field": "access_token"}
+                )
+            
+            # Validate access token secret format
+            access_token_secret = credentials["access_token_secret"]
+            if len(access_token_secret) < 10:
+                raise TradingError(
+                    "Invalid access token secret format",
+                    ErrorCode.INVALID_CREDENTIALS,
+                    details={"platform": platform, "field": "access_token_secret"}
                 )
         
         elif platform == "schwab":

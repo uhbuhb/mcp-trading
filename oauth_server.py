@@ -191,7 +191,7 @@ async def setup_credentials(
     logger.info(f"Setting up credentials for {email} on {platform}")
     
     # Validate platform
-    if platform not in ["tradier", "tradier_paper", "schwab"]:
+    if platform not in ["tradier", "tradier_paper", "etrade", "etrade_paper", "schwab"]:
         raise HTTPException(400, "Unsupported platform")
     
     # Check if user is authenticated via OAuth
