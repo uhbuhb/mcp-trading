@@ -87,7 +87,8 @@ def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
 async def get_positions(
     ctx: Context,
     platform: str,
-    account_id: Optional[str] = None
+    account_id: Optional[str] = None,
+    **options
 ) -> str:
     """
     Get current trading positions from trading account.
@@ -96,9 +97,45 @@ async def get_positions(
         ctx: FastMCP Context (automatically injected, contains user_id and db)
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
         account_id: Optional account ID override
+        **options: Platform-specific options (see platform documentation)
+        
+        E*TRADE-specific options:
+            count (int): Number of positions to return (default: 50)
+            view (str): Detail level - 'QUICK', 'PERFORMANCE', 'FUNDAMENTAL', 
+                       'OPTIONSWATCH', 'COMPLETE'
+                - 'QUICK': Basic position info with quick view data (default)
+                - 'PERFORMANCE': Performance metrics and gains
+                - 'FUNDAMENTAL': Fundamental data (P/E, EPS, dividends, market cap)
+                - 'OPTIONSWATCH': Options data with Greeks (delta, gamma, theta, vega, rho, IV)
+                - 'COMPLETE': All available data
+            sort_by (str): Field to sort by - 'SYMBOL', 'MARKET_VALUE', 'TOTAL_GAIN', etc.
+            sort_order (str): Sort direction - 'ASC' or 'DESC' (default: 'DESC')
+            page_number (int): Page number for pagination
+            market_session (str): Market session - 'REGULAR' or 'EXTENDED'
+            totals_required (bool): Include portfolio totals summary
+            lots_required (bool): Include detailed position lots
+            
+        Schwab and Tradier: No additional options currently supported
     
     Returns:
         JSON string containing position information
+        
+    Examples:
+        # Basic positions (all platforms)
+        get_positions(platform="etrade", account_id="12345")
+        
+        # Options positions with Greeks (E*TRADE only)
+        get_positions(platform="etrade", account_id="12345", view="OPTIONSWATCH", count=100)
+        
+        # Complete portfolio analysis (E*TRADE only)
+        get_positions(
+            platform="etrade",
+            account_id="12345",
+            view="COMPLETE",
+            totals_required=True,
+            sort_by="MARKET_VALUE",
+            sort_order="DESC"
+        )
         
     Note: If this tool fails due to missing credentials, please direct the user 
     to visit the server login page to set up their trading platform credentials.
@@ -106,7 +143,7 @@ async def get_positions(
     # Extract authenticated user context from FastMCP Context
     user_id, db = get_user_context_from_ctx(ctx)
     
-    logger.info(f"get_positions - user: {user_id}, platform: {platform}")
+    logger.info(f"get_positions - user: {user_id}, platform: {platform}, options: {options}")
     
     # Validate platform
     validate_platform(platform)
@@ -115,37 +152,89 @@ async def get_positions(
     client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
     account_to_use = account_id or db_account_number
     
-    # Fetch positions
-    positions = client.get_positions(account_to_use)
+    # Fetch positions with platform-specific options
+    result = client.get_positions(account_to_use, **options)
     
-    if not positions:
+    # Handle different return types (list for simple, dict for enhanced)
+    if isinstance(result, dict) and 'positions' in result:
+        # Enhanced response with totals/pagination (E*TRADE)
+        positions = result.get('positions', [])
+        totals = result.get('totals')
+        pagination = result.get('pagination')
+        
+        if not positions:
+            return json.dumps({
+                "status": "success",
+                "message": "No positions found",
+                "platform": platform,
+                "positions": [],
+                "totals": totals,
+                "pagination": pagination
+            }, indent=2)
+        
+        response = {
+            "status": "success",
+            "message": f"Retrieved {len(positions)} positions",
+            "platform": platform,
+            "positions": positions
+        }
+        
+        if totals:
+            response["totals"] = totals
+        if pagination:
+            response["pagination"] = pagination
+        
+        return json.dumps(response, indent=2)
+    else:
+        # Simple list response (all platforms)
+        positions = result if result else []
+        
+        if not positions:
+            return json.dumps({
+                "status": "success",
+                "message": "No positions found",
+                "platform": platform,
+                "positions": []
+            }, indent=2)
+        
+        # For backward compatibility, format basic fields
+        formatted_positions = []
+        for pos in positions:
+            formatted_pos = {
+                "symbol": pos.get("symbol", "N/A"),
+                "description": pos.get("description", "N/A"),
+                "quantity": pos.get("quantity", "N/A"),
+                "cost_basis": pos.get("cost_basis", "N/A"),
+                "last_price": pos.get("last_price", "N/A"),
+                "market_value": pos.get("market_value", "N/A"),
+                "gain_loss": pos.get("gain_loss", "N/A"),
+                "gain_loss_percent": pos.get("gain_loss_percent", "N/A")
+            }
+            
+            # Include extended data if available (E*TRADE views)
+            if "product" in pos:
+                formatted_pos["product"] = pos["product"]
+            if "quick" in pos:
+                formatted_pos["quick"] = pos["quick"]
+            if "performance" in pos:
+                formatted_pos["performance"] = pos["performance"]
+            if "fundamental" in pos:
+                formatted_pos["fundamental"] = pos["fundamental"]
+            if "options_watch" in pos:
+                formatted_pos["options_watch"] = pos["options_watch"]
+            if "complete" in pos:
+                formatted_pos["complete"] = pos["complete"]
+            if "position_lots" in pos:
+                formatted_pos["position_lots"] = pos["position_lots"]
+            
+            formatted_positions.append(formatted_pos)
+        
         return json.dumps({
             "status": "success",
-            "message": "No positions found",
-            "positions": []
+            "message": f"Retrieved {len(formatted_positions)} positions",
+            "platform": platform,
+            "positions": formatted_positions
         }, indent=2)
-    
-    # Format positions
-    formatted_positions = [
-        {
-            "symbol": pos.get("symbol", "N/A"),
-            "description": pos.get("description", "N/A"),
-            "quantity": pos.get("quantity", "N/A"),
-            "cost_basis": pos.get("cost_basis", "N/A"),
-            "last_price": pos.get("last_price", "N/A"),
-            "market_value": pos.get("market_value", "N/A"),
-            "gain_loss": pos.get("gain_loss", "N/A"),
-            "gain_loss_percent": pos.get("gain_loss_percent", "N/A")
-        }
-        for pos in positions
-    ]
-    
-    return json.dumps({
-        "status": "success",
-        "message": f"Retrieved {len(formatted_positions)} positions",
-        "platform": platform,
-        "positions": formatted_positions
-    }, indent=2)
 
 @handle_trading_error
 @mcp.tool()

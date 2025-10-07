@@ -203,12 +203,16 @@ class SchwabClient(TradingPlatformInterface):
         """
         return self.account_hash
 
-    def get_positions(self, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_positions(self, account_id: Optional[str] = None, **options) -> List[Dict[str, Any]]:
         """
-        Get current positions.
+        Get current positions from Schwab.
 
         Args:
             account_id: Specific account hash (optional)
+            **options: Platform-specific options (currently none supported by Schwab API)
+            
+        Note: Schwab API returns all positions without pagination or filtering.
+              Additional options are accepted for interface compatibility but ignored.
 
         Returns:
             List of position dictionaries

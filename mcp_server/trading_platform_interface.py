@@ -36,15 +36,34 @@ class TradingPlatformInterface(ABC):
         pass
     
     @abstractmethod
-    def get_positions(self, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_positions(self, account_id: Optional[str] = None, **options) -> Any:
         """
         Get current positions.
         
         Args:
             account_id: Optional account ID override
+            **options: Platform-specific options (see platform documentation for supported options)
+            
+        Common options across platforms:
+            - None currently standardized (each platform has unique capabilities)
+            
+        Platform-specific options:
+            E*TRADE supports:
+                - count (int): Number of positions to return (default: 50)
+                - view (str): Detail level - 'QUICK', 'PERFORMANCE', 'FUNDAMENTAL', 
+                             'OPTIONSWATCH', 'COMPLETE'
+                - sort_by (str): Field to sort by - 'SYMBOL', 'MARKET_VALUE', etc.
+                - sort_order (str): 'ASC' or 'DESC'
+                - page_number (int): Page number for pagination
+                - market_session (str): 'REGULAR' or 'EXTENDED'
+                - totals_required (bool): Include portfolio totals
+                - lots_required (bool): Include position lots
+            
+            Schwab and Tradier: No additional options currently supported
             
         Returns:
-            List of position dictionaries
+            List of position dictionaries, or dict with positions and metadata
+            (return type varies by platform and options used)
         """
         pass
     

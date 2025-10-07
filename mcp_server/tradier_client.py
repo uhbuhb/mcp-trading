@@ -94,12 +94,16 @@ class TradierClient(TradingPlatformInterface):
         account_info = self.get_account_info()
         return account_info.get('account_number', 'N/A')
     
-    def get_positions(self, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_positions(self, account_id: Optional[str] = None, **options) -> List[Dict[str, Any]]:
         """
-        Get current positions.
+        Get current positions from Tradier.
         
         Args:
             account_id: Specific account ID (optional)
+            **options: Platform-specific options (currently none supported by Tradier API)
+            
+        Note: Tradier API returns all positions without pagination or filtering.
+              Additional options are accepted for interface compatibility but ignored.
             
         Returns:
             List of position dictionaries
