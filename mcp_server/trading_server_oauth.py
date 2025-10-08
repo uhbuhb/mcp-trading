@@ -87,16 +87,19 @@ def get_user_context_from_ctx(ctx: Context) -> tuple[str, Session]:
 async def get_positions(
     ctx: Context,
     platform: str,
-    account_id: Optional[str] = None,
+    account_id: str,
     **options
 ) -> str:
     """
     Get current trading positions from trading account.
     
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
+    
     Args:
         ctx: FastMCP Context (automatically injected, contains user_id and db)
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
         **options: Platform-specific options (see platform documentation)
         
         E*TRADE-specific options:
@@ -121,16 +124,20 @@ async def get_positions(
         JSON string containing position information
         
     Examples:
-        # Basic positions (all platforms)
-        get_positions(platform="etrade", account_id="12345")
+        # ALWAYS call list_accounts first to get account_id
+        list_accounts(platform="etrade")
+        # Returns: [{"account_id": "258165651", ...}, {"account_id": "258178042", ...}]
+        
+        # Then get positions for specific account
+        get_positions(platform="etrade", account_id="258165651")
         
         # Options positions with Greeks (E*TRADE only)
-        get_positions(platform="etrade", account_id="12345", view="OPTIONSWATCH", count=100)
+        get_positions(platform="etrade", account_id="258165651", view="OPTIONSWATCH", count=100)
         
         # Complete portfolio analysis (E*TRADE only)
         get_positions(
             platform="etrade",
-            account_id="12345",
+            account_id="258165651",
             view="COMPLETE",
             totals_required=True,
             sort_by="MARKET_VALUE",
@@ -143,17 +150,16 @@ async def get_positions(
     # Extract authenticated user context from FastMCP Context
     user_id, db = get_user_context_from_ctx(ctx)
     
-    logger.info(f"get_positions - user: {user_id}, platform: {platform}, options: {options}")
+    logger.info(f"get_positions - user: {user_id}, platform: {platform}, account_id: {account_id}, options: {options}")
     
     # Validate platform
     validate_platform(platform)
     
     # Get user's trading client using factory
-    client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-    account_to_use = account_id or db_account_number
+    client = TradingClientFactory.create_client_for_user(user_id, platform, db)
     
     # Fetch positions with platform-specific options
-    result = client.get_positions(account_to_use, **options)
+    result = client.get_positions(account_id, **options)
     
     # Handle different return types (list for simple, dict for enhanced)
     if isinstance(result, dict) and 'positions' in result:
@@ -279,18 +285,20 @@ async def place_multileg_order(
     symbol: str,
     legs: str,
     platform: str,
+    account_id: str,
     order_type: str = "limit",
     price: Optional[str] = None,
     session: str = "normal",
     duration: str = "day",
-    preview: bool = True,
-    account_id: Optional[str] = None
-    
+    preview: bool = True
 ) -> str:
     """
     Place a multileg option order or preview it. If preview value isnt specified, ask user if they want to preview
     the order or actually place it and set preview value accordingly. Same for the other parameters, if they arent 
     specified suggest a value and ask the user if they want something else.
+    
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
     
     Args:
         ctx: FastMCP Context (automatically injected)
@@ -300,8 +308,8 @@ async def place_multileg_order(
               Option symbols in OCC format: [SYMBOL padded with spaces to 6 characters][YYMMDD][C/P][STRIKE padded to 8 digits]
               Example: "V251017C00340000" (V call, Oct 17 2025, $340 strike)
               Note: Option symbols are validated and converted automatically for each platform
-        account_id: Optional account ID override
         platform: Trading platform (currently 'tradier', 'tradier_paper', 'etrade', 'etrade_paper', and 'schwab' are supported)
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
         order_type: Order type ('market' or 'limit')
         duration: Order duration ('day', 'gtc')
         preview: Preview to check if the order would be accepted. This should always be done before placing the order.  (default: True)
@@ -335,8 +343,7 @@ async def place_multileg_order(
         raise TradingError("Invalid JSON format for legs", ErrorCode.INVALID_FORMAT)
 
     # Get client using factory
-    client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-    account_to_use = account_id or db_account_number
+    client = TradingClientFactory.create_client_for_user(user_id, platform, db)
 
     # Convert and validate price
     price_float = None
@@ -345,7 +352,7 @@ async def place_multileg_order(
 
     # Place order
     response = client.place_multileg_order(
-        account_id=account_to_use,
+        account_id=account_id,
         symbol=symbol,
         legs=legs_data,
         order_type=order_type,
@@ -367,15 +374,18 @@ async def place_multileg_order(
 async def get_balance(
     ctx: Context,
     platform: str,
-    account_id: Optional[str] = None
+    account_id: str
 ) -> str:
     """
     Get account balance information.
     
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
+    
     Args:
         ctx: FastMCP Context (automatically injected)
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
     
     Returns:
         JSON string containing balance information
@@ -386,10 +396,9 @@ async def get_balance(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+        client = TradingClientFactory.create_client_for_user(user_id, platform, db)
 
-        balance = client.get_balance(account_to_use)
+        balance = client.get_balance(account_id)
 
         return json.dumps({
             "status": "success",
@@ -409,16 +418,19 @@ async def get_balance(
 async def view_orders(
     ctx: Context,
     platform: str,
-    account_id: Optional[str] = None,
+    account_id: str,
     include_filled: bool = True
 ) -> str:
     """
     View orders from trading account.
     
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
+    
     Args:
         ctx: FastMCP Context (automatically injected)
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
         include_filled: Include filled orders (default: True)
     
     Returns:
@@ -427,10 +439,9 @@ async def view_orders(
     user_id, db = get_user_context_from_ctx(ctx)
 
     try:
-        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+        client = TradingClientFactory.create_client_for_user(user_id, platform, db)
 
-        orders = client.get_orders(account_id=account_to_use, include_filled=include_filled)
+        orders = client.get_orders(account_id=account_id, include_filled=include_filled)
 
         if not orders:
             return json.dumps({
@@ -457,16 +468,19 @@ async def cancel_order(
     ctx: Context,
     order_id: str,
     platform: str,
-    account_id: Optional[str] = None
+    account_id: str
 ) -> str:
     """
     Cancel an existing order.
+    
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
     
     Args:
         ctx: FastMCP Context (automatically injected)
         order_id: Order ID to cancel
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
     
     Returns:
         JSON string containing cancellation response
@@ -477,10 +491,9 @@ async def cancel_order(
         if not order_id:
             raise TradingError("Order ID is required")
 
-        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+        client = TradingClientFactory.create_client_for_user(user_id, platform, db)
 
-        response = client.cancel_order(account_id=account_to_use, order_id=order_id)
+        response = client.cancel_order(account_id=account_id, order_id=order_id)
 
         return json.dumps({
             "status": "success",
@@ -499,7 +512,7 @@ async def cancel_order(
 async def get_account_history(
     ctx: Context,
     platform: str,
-    account_id: Optional[str] = None,
+    account_id: str,
     limit: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
@@ -507,10 +520,13 @@ async def get_account_history(
     """
     Get account transaction history.
     
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
+    
     Args:
         ctx: FastMCP Context (automatically injected)
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
         limit: Number of records to return
         start_date: Start date (YYYY-MM-DD format)
         end_date: End date (YYYY-MM-DD format)
@@ -521,11 +537,10 @@ async def get_account_history(
     user_id, db = get_user_context_from_ctx(ctx)
     
     try:
-        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+        client = TradingClientFactory.create_client_for_user(user_id, platform, db)
         
         history = client.get_account_history(
-            account_id=account_to_use,
+            account_id=account_id,
             limit=limit,
             start_date=start_date,
             end_date=end_date
@@ -587,32 +602,89 @@ async def get_account_status(ctx: Context, platform: str) -> str:
     finally:
         db.close()
 
+@handle_trading_error
+@mcp.tool()
+async def list_accounts(
+    ctx: Context,
+    platform: str
+) -> str:
+    """
+    List all available accounts for the authenticated user on the specified platform.
+    
+    This is particularly useful for platforms like E*TRADE where users may have multiple accounts.
+    
+    Args:
+        ctx: FastMCP Context (automatically injected)
+        platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
+    
+    Returns:
+        JSON string containing list of accounts with details:
+        - account_id: Account identifier (use this for account_id parameter in other tools)
+        - account_number: Account number (platform-specific key)
+        - description: Human-readable account description
+        - type: Account type (e.g., 'INDIVIDUAL', 'IRA', 'MARGIN')
+        - status: Account status (e.g., 'ACTIVE', 'CLOSED')
+        - institution_type: Type of institution (e.g., 'BROKERAGE')
+    
+    Examples:
+        # List all E*TRADE accounts
+        list_accounts(platform="etrade")
+        
+        # List Tradier account
+        list_accounts(platform="tradier")
+    
+    Note: If this tool fails due to missing credentials, please direct the user 
+    to visit the server login page to set up their trading platform credentials.
+    """
+    user_id, db = get_user_context_from_ctx(ctx)
+    
+    logger.info(f"list_accounts - user: {user_id}, platform: {platform}")
+    
+    # Validate platform
+    validate_platform(platform)
+    
+    # Get user's trading client using factory
+    client = TradingClientFactory.create_client_for_user(user_id, platform, db)
+    
+    # Get list of accounts
+    accounts = client.list_accounts()
+    
+    return json.dumps({
+        "status": "success",
+        "message": f"Retrieved {len(accounts)} account(s)",
+        "platform": platform,
+        "total_accounts": len(accounts),
+        "accounts": accounts
+    }, indent=2)
+
 @mcp.tool()
 async def get_account_info(
     ctx: Context,
     platform: str,
-    account_id: Optional[str] = None
+    account_id: str
 ) -> str:
     """
     Get account information from trading platform.
+    
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
 
     Args:
         ctx: FastMCP Context (automatically injected)
         platform: Trading platform to use ('tradier', 'tradier_paper', 'etrade', 'etrade_paper', or 'schwab')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
 
     Returns:
         JSON string containing account information
     """
     user_id, db = get_user_context_from_ctx(ctx)
 
-    logger.info(f"get_account_info - user: {user_id}, platform: {platform}")
+    logger.info(f"get_account_info - user: {user_id}, platform: {platform}, account_id: {account_id}")
 
     try:
-        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+        client = TradingClientFactory.create_client_for_user(user_id, platform, db)
 
-        account_info = client.get_account_info(account_to_use)
+        account_info = client.get_account_info(account_id)
 
         return json.dumps({
             "status": "success",
@@ -637,7 +709,7 @@ async def change_order(
     ctx: Context,
     order_id: str,
     platform: str,
-    account_id: Optional[str] = None,
+    account_id: str,
     order_type: Optional[str] = None,
     price: Optional[str] = None,
     stop: Optional[str] = None,
@@ -646,12 +718,15 @@ async def change_order(
 ) -> str:
     """
     Change/modify an existing order.
+    
+    IMPORTANT: account_id is REQUIRED. If you don't know the account_id, 
+    call list_accounts(platform) first to see available accounts.
 
     Args:
         ctx: FastMCP Context (automatically injected)
         order_id: Order ID to change
         platform: Trading platform (default: 'tradier')
-        account_id: Optional account ID override
+        account_id: Account ID (REQUIRED). Use list_accounts() to discover available account IDs.
         order_type: New order type ('market', 'limit', 'stop', 'stop_limit')
         price: New limit price (required for limit orders)
         stop: New stop price (required for stop orders)
@@ -680,12 +755,11 @@ async def change_order(
         if order_type in ['stop', 'stop_limit'] and stop is None:
             raise TradingError(f"Stop price is required for {order_type} orders")
 
-        client, db_account_number = TradingClientFactory.create_client_for_user(user_id, platform, db)
-        account_to_use = account_id or db_account_number
+        client = TradingClientFactory.create_client_for_user(user_id, platform, db)
 
         # Change the order
         response = client.change_order(
-            account_id=account_to_use,
+            account_id=account_id,
             order_id=order_id,
             order_type=order_type,
             price=float(price) if price is not None else None,
@@ -713,7 +787,7 @@ async def change_order(
             "status": "success",
             "message": f"Order {order_id} modification {'submitted' if response else 'completed'} on {platform}",
             "platform": platform,
-            "account_id": account_to_use,
+            "account_id": account_id,
             "order_id": order_id,
             "changes": changes_summary,
             "response": response

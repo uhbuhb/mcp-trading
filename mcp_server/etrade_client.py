@@ -37,6 +37,7 @@ class EtradeClient(TradingPlatformInterface):
         self.access_token_secret = access_token_secret
         self.base_url = base_url
         self._session = None
+        self._accounts_cache: Optional[List[Dict[str, Any]]] = None
         
         logger.info(f"Initialized EtradeClient with base_url: {base_url}")
 
@@ -150,61 +151,44 @@ class EtradeClient(TradingPlatformInterface):
                 details={"error": str(e)}
             )
 
-    def _resolve_account_id(self, account_id: Optional[str]) -> str:
-        """Resolve account ID, supporting both accountId and accountIdKey"""
+    def _resolve_account_id(self, account_id: str) -> str:
+        """
+        Resolve and validate account ID, supporting both accountId and accountIdKey.
+        
+        Args:
+            account_id: Account ID (required - either accountId or accountIdKey)
+        
+        Returns:
+            accountIdKey (the key used for API calls)
+        
+        Raises:
+            ValueError: If account_id is not found
+        """
         logger.debug(f"Resolving account_id: {account_id}")
         
-        # If no account_id provided, fetch account list and let user choose
-        if not account_id or account_id == "etrade_account":
-            logger.info("No account ID provided, fetching account list")
-            try:
-                accounts = self.list_all_accounts()
-                if not accounts:
-                    raise ValueError("No accounts found in E*TRADE")
-                
-                # If only one account, use it automatically
-                if len(accounts) == 1:
-                    account = accounts[0]
-                    logger.info(f"Only one account found, using: {account['accountId']} ({account['accountDesc']})")
-                    return account['accountIdKey']
-                
-                # Multiple accounts - raise error with account list for user to choose
-                account_list = []
-                for acc in accounts:
-                    account_list.append({
-                        'accountId': acc['accountId'],
-                        'accountDesc': acc['accountDesc'],
-                        'accountType': acc['accountType'],
-                        'institutionType': acc['institutionType'],
-                        'accountStatus': acc['accountStatus']
-                    })
-                
-                raise ValueError(f"Multiple accounts found. Please specify account_id. Available accounts: {account_list}")
-                
-            except Exception as e:
-                logger.error(f"Failed to resolve account ID: {e}")
-                raise ValueError(f"Failed to resolve account ID: {str(e)}")
+        # Validate account exists and return accountIdKey
+        accounts = self.list_all_accounts()
+        for account in accounts:
+            # Support both accountId and accountIdKey for user convenience
+            if account['accountId'] == account_id or account['accountIdKey'] == account_id:
+                logger.debug(f"Found matching account: {account['accountId']} ({account['accountDesc']})")
+                return account['accountIdKey']  # Always use accountIdKey for API calls
         
-        # If account_id is provided, validate it exists and return accountIdKey
-        try:
-            accounts = self.list_all_accounts()
-            for account in accounts:
-                # Support both accountId and accountIdKey for user convenience
-                if account['accountId'] == account_id or account['accountIdKey'] == account_id:
-                    logger.debug(f"Found matching account: {account['accountId']} ({account['accountDesc']})")
-                    return account['accountIdKey']  # Always use accountIdKey for API calls
-            
-            # Account not found
-            available_ids = [acc['accountId'] for acc in accounts]
-            raise ValueError(f"Account ID '{account_id}' not found. Available account IDs: {available_ids}")
-            
-        except Exception as e:
-            logger.error(f"Failed to validate account ID: {e}")
-            raise ValueError(f"Failed to validate account ID: {str(e)}")
+        # Account not found
+        available_ids = [acc['accountId'] for acc in accounts]
+        raise ValueError(f"Account ID '{account_id}' not found. Available account IDs: {available_ids}")
 
 
-    def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
-        """Get account information from E*TRADE"""
+    def get_account_info(self, account_id: str) -> Dict[str, Any]:
+        """
+        Get account information from E*TRADE.
+        
+        Args:
+            account_id: Account ID (required - either accountId or accountIdKey)
+        
+        Returns:
+            Account information dictionary
+        """
         try:
             logger.info(f"Getting account info for account_id: {account_id}")
             
@@ -212,25 +196,17 @@ class EtradeClient(TradingPlatformInterface):
             accounts = self.list_all_accounts()
             if not accounts:
                 logger.warning("No accounts found in E*TRADE")
-                return {}
+                raise ValueError("No accounts found in E*TRADE")
             
-            # If specific account requested, find and return it
-            if account_id:
-                for account in accounts:
-                    if account['accountId'] == account_id or account['accountIdKey'] == account_id:
-                        logger.info(f"Found requested account: {account['accountId']} ({account['accountDesc']})")
-                        return self._format_account_info(account)
-                
-                # Account not found
-                available_ids = [acc['accountId'] for acc in accounts]
-                raise ValueError(f"Account ID '{account_id}' not found. Available account IDs: {available_ids}")
+            # Find the specific account
+            for account in accounts:
+                if account['accountId'] == account_id or account['accountIdKey'] == account_id:
+                    logger.info(f"Found requested account: {account['accountId']} ({account['accountDesc']})")
+                    return self._format_account_info(account)
             
-            # If no specific account requested, return all accounts info
-            logger.info(f"Returning info for all {len(accounts)} accounts")
-            return {
-                'accounts': [self._format_account_info(acc) for acc in accounts],
-                'total_accounts': len(accounts)
-            }
+            # Account not found
+            available_ids = [acc['accountId'] for acc in accounts]
+            raise ValueError(f"Account ID '{account_id}' not found. Available account IDs: {available_ids}")
             
         except TradingError:
             raise
@@ -242,6 +218,19 @@ class EtradeClient(TradingPlatformInterface):
                 details={"error": str(e)}
             )
 
+    @property
+    def accounts(self) -> List[Dict[str, Any]]:
+        """
+        Get list of available accounts (lazy-loaded and cached).
+        
+        Returns:
+            List of account dictionaries with standardized format
+        """
+        if self._accounts_cache is None:
+            logger.debug("Lazy-loading accounts (first access)")
+            self._accounts_cache = self.list_accounts()
+        return self._accounts_cache
+    
     def get_account_number(self) -> str:
         """Get the primary account number (first active brokerage account)"""
         try:
@@ -262,8 +251,32 @@ class EtradeClient(TradingPlatformInterface):
             logger.error(f"Failed to get account number: {e}")
             return 'N/A'
 
+    def list_accounts(self) -> List[Dict[str, Any]]:
+        """
+        List all available accounts for the authenticated user.
+        
+        Returns:
+            List of account dictionaries with standardized format
+        """
+        raw_accounts = self.list_all_accounts()
+        
+        # Convert to standardized format
+        standardized_accounts = []
+        for account in raw_accounts:
+            standardized_accounts.append({
+                'account_id': account.get('accountId', 'N/A'),
+                'account_number': account.get('accountIdKey', 'N/A'),
+                'description': account.get('accountDesc', 'N/A'),
+                'type': account.get('accountType', 'N/A'),
+                'status': account.get('accountStatus', 'N/A'),
+                'institution_type': account.get('institutionType', 'N/A'),
+                'account_mode': account.get('accountMode', 'N/A')
+            })
+        
+        return standardized_accounts
+    
     def list_all_accounts(self) -> List[Dict[str, Any]]:
-        """List all available accounts with their details"""
+        """List all available accounts with their details (E*TRADE raw format)"""
         try:
             logger.info("Fetching all accounts from E*TRADE")
             response = self._make_request("/v1/accounts/list.json")
@@ -305,14 +318,14 @@ class EtradeClient(TradingPlatformInterface):
                 details={"error": str(e)}
             )
 
-    def get_positions(self, account_id: Optional[str] = None, **options) -> Any:
+    def get_positions(self, account_id: str, **options) -> Any:
         """
         Get positions from E*TRADE with full API support.
         
         E*TRADE API documentation: https://apisb.etrade.com/docs/api/account/api-portfolio-v1.html
         
         Args:
-            account_id: Account ID (optional, will auto-resolve if not provided)
+            account_id: Account ID (required - either accountId or accountIdKey)
             **options: E*TRADE-specific options:
                 - count (int): Number of positions to return (default: 50, E*TRADE API default)
                 - view (str): Detail level for position data:
@@ -484,8 +497,16 @@ class EtradeClient(TradingPlatformInterface):
             logger.error(f"Failed to get quote from E*TRADE: {e}")
             raise
 
-    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, Any]:
-        """Get account balance from E*TRADE"""
+    def get_balance(self, account_id: str) -> Dict[str, Any]:
+        """
+        Get account balance from E*TRADE.
+        
+        Args:
+            account_id: Account ID (required - either accountId or accountIdKey)
+        
+        Returns:
+            Account balance dictionary
+        """
         try:
             account_to_use = self._resolve_account_id(account_id)
             

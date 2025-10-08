@@ -53,6 +53,8 @@ class SchwabClient(TradingPlatformInterface):
         if not account_hash:
             raise ValueError("account_hash is required")
         
+        self._accounts_cache: Optional[List[Dict[str, Any]]] = None
+        
         # Initialize schwab-py client with custom token management
         self.schwab_client = client_from_access_functions(
             api_key=self.app_key,
@@ -125,12 +127,12 @@ class SchwabClient(TradingPlatformInterface):
 
 
 
-    def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_account_info(self, account_id: str) -> Dict[str, Any]:
         """
         Get account information.
 
         Args:
-            account_id: Specific account hash (optional, uses default if not provided)
+            account_id: Account hash (required)
 
         Returns:
             Account information dictionary
@@ -203,12 +205,49 @@ class SchwabClient(TradingPlatformInterface):
         """
         return self.account_hash
 
-    def get_positions(self, account_id: Optional[str] = None, **options) -> List[Dict[str, Any]]:
+    @property
+    def accounts(self) -> List[Dict[str, Any]]:
+        """
+        Get list of available accounts (lazy-loaded and cached).
+        
+        Returns:
+            List of account dictionaries with standardized format
+        """
+        if self._accounts_cache is None:
+            self._accounts_cache = self.list_accounts()
+        return self._accounts_cache
+    
+    def list_accounts(self) -> List[Dict[str, Any]]:
+        """
+        List all available accounts for the authenticated user.
+        
+        Note: Schwab typically returns a single account per account hash.
+        
+        Returns:
+            List of account dictionaries with standardized format
+        """
+        # Get account info using the configured account hash
+        account_info = self.get_account_info(self.account_hash)
+        
+        # Convert to standardized format (Schwab has 1 account per hash)
+        return [{
+            'account_id': account_info.get('account_id', 'N/A'),
+            'account_number': account_info.get('account_number', self.account_hash),
+            'description': f"{account_info.get('type', 'N/A')} Account",
+            'type': account_info.get('type', 'N/A'),
+            'status': 'ACTIVE',  # Schwab doesn't explicitly provide status
+            'institution_type': 'BROKERAGE',
+            'is_day_trader': account_info.get('is_day_trader', False),
+            'is_closing_only': account_info.get('is_closing_only', False),
+            'round_trips': account_info.get('round_trips', 0)
+        }]
+
+    def get_positions(self, account_id: str, **options) -> List[Dict[str, Any]]:
         """
         Get current positions from Schwab.
 
         Args:
-            account_id: Specific account hash (optional)
+            account_id: Account hash (required)
             **options: Platform-specific options (currently none supported by Schwab API)
             
         Note: Schwab API returns all positions without pagination or filtering.
@@ -327,12 +366,12 @@ class SchwabClient(TradingPlatformInterface):
             logger.error(f"Failed to get quote: {e}")
             raise
 
-    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_balance(self, account_id: str) -> Dict[str, Any]:
         """
         Get account balance information.
 
         Args:
-            account_id: Specific account hash (optional)
+            account_id: Account hash (required)
 
         Returns:
             Balance information dictionary

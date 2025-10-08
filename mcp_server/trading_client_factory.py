@@ -33,7 +33,7 @@ class TradingClientFactory:
     def create_client(
         platform: str,
         credentials: Dict[str, Any]
-    ) -> Tuple[TradingPlatformInterface, str]:
+    ) -> TradingPlatformInterface:
         """
         Create a trading client for the specified platform.
         
@@ -42,10 +42,7 @@ class TradingClientFactory:
             credentials: Dictionary containing platform-specific credentials
             
         Returns:
-            Tuple of (client, account_identifier)
-            - For Tradier: account_identifier is account_number
-            - For Schwab: account_identifier is account_hash
-            - For E*TRADE: account_identifier is account_id
+            Trading platform client instance
             
         Raises:
             TradingError: If platform is unsupported or credentials are invalid
@@ -82,7 +79,7 @@ class TradingClientFactory:
         user_id: str,
         platform: str,
         db
-    ) -> Tuple[TradingPlatformInterface, str]:
+    ) -> TradingPlatformInterface:
         """
         Create a trading client with user-specific credentials from database.
         
@@ -92,7 +89,7 @@ class TradingClientFactory:
             db: Database session
             
         Returns:
-            Tuple of (client, account_identifier)
+            Trading platform client instance
             
         Raises:
             TradingError: If credentials not found or decryption fails
@@ -131,7 +128,7 @@ class TradingClientFactory:
     def _create_tradier_client(
         platform: str,
         credentials: Dict[str, Any]
-    ) -> Tuple[TradingPlatformInterface, str]:
+    ) -> TradingPlatformInterface:
         """Create a Tradier client."""
         access_token = credentials.get("access_token")
         account_number = credentials.get("account_number")
@@ -154,12 +151,12 @@ class TradingClientFactory:
         client = TradierClient(access_token=access_token, base_url=base_url)
         
         logger.info(f"Created Tradier client for {platform}")
-        return client, account_number
+        return client
     
     @staticmethod
     def _create_schwab_client(
         credentials: Dict[str, Any]
-    ) -> Tuple[TradingPlatformInterface, str]:
+    ) -> TradingPlatformInterface:
         """Create a Schwab client."""
         access_token = credentials.get("access_token")
         refresh_token = credentials.get("refresh_token")
@@ -195,13 +192,13 @@ class TradingClientFactory:
         )
         
         logger.info("Created Schwab client")
-        return client, account_hash
+        return client
     
     @staticmethod
     def _create_etrade_client(
         platform: str,
         credentials: Dict[str, Any]
-    ) -> Tuple[TradingPlatformInterface, str]:
+    ) -> TradingPlatformInterface:
         """Create an E*TRADE client."""
         consumer_key = credentials.get("consumer_key")
         consumer_secret = credentials.get("consumer_secret")
@@ -246,7 +243,7 @@ class TradingClientFactory:
         )
         
         logger.info(f"Created E*TRADE client for {platform}")
-        return client, "etrade_account"  # Will be resolved from account list
+        return client
     
     @staticmethod
     def get_supported_platforms() -> list:
@@ -401,10 +398,10 @@ class TradingClientFactory:
         }
 
 # Convenience functions for backward compatibility
-def create_trading_client(platform: str, credentials: Dict[str, Any]) -> Tuple[TradingPlatformInterface, str]:
+def create_trading_client(platform: str, credentials: Dict[str, Any]) -> TradingPlatformInterface:
     """Convenience function to create a trading client."""
     return TradingClientFactory.create_client(platform, credentials)
 
-def create_trading_client_for_user(user_id: str, platform: str, db) -> Tuple[TradingPlatformInterface, str]:
+def create_trading_client_for_user(user_id: str, platform: str, db) -> TradingPlatformInterface:
     """Convenience function to create a trading client for a user."""
     return TradingClientFactory.create_client_for_user(user_id, platform, db)

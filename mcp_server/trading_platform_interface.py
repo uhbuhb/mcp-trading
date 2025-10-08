@@ -12,13 +12,33 @@ from typing import Dict, List, Any, Optional
 class TradingPlatformInterface(ABC):
     """Abstract base class for trading platform clients."""
     
+    @property
     @abstractmethod
-    def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def accounts(self) -> List[Dict[str, Any]]:
         """
-        Get account information.
+        Get list of available accounts (lazy-loaded and cached).
+        
+        This property fetches the account list on first access and caches it.
+        Since account lists rarely change, caching is safe and improves performance.
+        
+        Returns:
+            List of account dictionaries with details such as:
+            - account_id: Account identifier
+            - account_number: Account number (platform-specific key)
+            - description: Account description
+            - type: Account type
+            - status: Account status
+            - institution_type: Type of institution
+        """
+        pass
+    
+    @abstractmethod
+    def get_account_info(self, account_id: str) -> Dict[str, Any]:
+        """
+        Get account information for a specific account.
         
         Args:
-            account_id: Optional account ID override
+            account_id: Account ID (required)
             
         Returns:
             Account information dictionary
@@ -26,22 +46,12 @@ class TradingPlatformInterface(ABC):
         pass
     
     @abstractmethod
-    def get_account_number(self) -> str:
-        """
-        Get the primary account number.
-        
-        Returns:
-            Account number as string
-        """
-        pass
-    
-    @abstractmethod
-    def get_positions(self, account_id: Optional[str] = None, **options) -> Any:
+    def get_positions(self, account_id: str, **options) -> Any:
         """
         Get current positions.
         
         Args:
-            account_id: Optional account ID override
+            account_id: Account ID (required)
             **options: Platform-specific options (see platform documentation for supported options)
             
         Common options across platforms:
@@ -81,12 +91,12 @@ class TradingPlatformInterface(ABC):
         pass
     
     @abstractmethod
-    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_balance(self, account_id: str) -> Dict[str, Any]:
         """
         Get account balance information.
         
         Args:
-            account_id: Optional account ID override
+            account_id: Account ID (required)
             
         Returns:
             Balance information dictionary
@@ -94,12 +104,12 @@ class TradingPlatformInterface(ABC):
         pass
     
     @abstractmethod
-    def get_orders(self, account_id: Optional[str] = None, include_filled: bool = True) -> List[Dict[str, Any]]:
+    def get_orders(self, account_id: str, include_filled: bool = True) -> List[Dict[str, Any]]:
         """
         Get orders for the account.
         
         Args:
-            account_id: Optional account ID override
+            account_id: Account ID (required)
             include_filled: Whether to include filled orders
             
         Returns:
@@ -143,13 +153,13 @@ class TradingPlatformInterface(ABC):
         pass
     
     @abstractmethod
-    def get_account_history(self, account_id: Optional[str] = None, limit: Optional[int] = None,
+    def get_account_history(self, account_id: str, limit: Optional[int] = None,
                            start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get account transaction history.
         
         Args:
-            account_id: Optional account ID override
+            account_id: Account ID (required)
             limit: Maximum number of transactions to return
             start_date: Start date for history (YYYY-MM-DD)
             end_date: End date for history (YYYY-MM-DD)

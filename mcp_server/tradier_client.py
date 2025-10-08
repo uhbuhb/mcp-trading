@@ -22,7 +22,7 @@ class TradierClient(TradingPlatformInterface):
         """
         self.access_token = access_token
         self.base_url = base_url
-        
+        self._accounts_cache: Optional[List[Dict[str, Any]]] = None
         
         self.headers = {
             'Authorization': f'Bearer {access_token}',
@@ -52,12 +52,12 @@ class TradierClient(TradingPlatformInterface):
         except requests.exceptions.RequestException as e:
             raise Exception(f"API request failed: {e}")
     
-    def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_account_info(self, account_id: str) -> Dict[str, Any]:
         """
         Get account information using user profile endpoint.
         
         Args:
-            account_id: Specific account ID (optional, not used in this implementation)
+            account_id: Account ID (required for interface consistency)
             
         Returns:
             Account information dictionary
@@ -94,12 +94,49 @@ class TradierClient(TradingPlatformInterface):
         account_info = self.get_account_info()
         return account_info.get('account_number', 'N/A')
     
-    def get_positions(self, account_id: Optional[str] = None, **options) -> List[Dict[str, Any]]:
+    @property
+    def accounts(self) -> List[Dict[str, Any]]:
+        """
+        Get list of available accounts (lazy-loaded and cached).
+        
+        Returns:
+            List of account dictionaries with standardized format
+        """
+        if self._accounts_cache is None:
+            self._accounts_cache = self.list_accounts()
+        return self._accounts_cache
+    
+    def list_accounts(self) -> List[Dict[str, Any]]:
+        """
+        List all available accounts for the authenticated user.
+        
+        Note: Tradier typically returns a single account per API token.
+        
+        Returns:
+            List of account dictionaries with standardized format
+        """
+        # Get account info from user profile
+        account_info = self.get_account_info()
+        
+        # Convert to standardized format (Tradier usually has 1 account per token)
+        return [{
+            'account_id': account_info.get('account_number', 'N/A'),
+            'account_number': account_info.get('account_number', 'N/A'),
+            'description': f"{account_info.get('account_type', 'N/A')} - {account_info.get('classification', 'N/A')}",
+            'type': account_info.get('account_type', 'N/A'),
+            'status': account_info.get('status', 'N/A'),
+            'institution_type': 'BROKERAGE',
+            'classification': account_info.get('classification', 'N/A'),
+            'day_trader': account_info.get('day_trader', False),
+            'option_level': account_info.get('option_level', 'N/A')
+        }]
+    
+    def get_positions(self, account_id: str, **options) -> List[Dict[str, Any]]:
         """
         Get current positions from Tradier.
         
         Args:
-            account_id: Specific account ID (optional)
+            account_id: Account ID (required)
             **options: Platform-specific options (currently none supported by Tradier API)
             
         Note: Tradier API returns all positions without pagination or filtering.
@@ -285,12 +322,12 @@ class TradierClient(TradingPlatformInterface):
         else:
             raise Exception(f"No historical data found for symbol: {symbol}")
 
-    def get_balance(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+    def get_balance(self, account_id: str) -> Dict[str, Any]:
         """
         Get account balance information.
         
         Args:
-            account_id: Specific account ID (optional)
+            account_id: Account ID (required)
             
         Returns:
             Balance information dictionary
